@@ -1,0 +1,528 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AEMPS CIMA MCP",
+    "version": "0.4.0",
+    "description": "Herramientas MCP que exponen, vía API REST, las funcionalidades de la API CIMA (AEMPS) y utilidades de búsqueda documental / RAG. Esta especificación permite a agentes A2A descubrir las herramientas y crear llamadas HTTP automáticamente.",
+    "contact": {
+      "name": "Equipo IA – Proyecto AEMPS",
+      "url": "https://midominio.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://mcp_server:8000",
+      "description": "Servidor MCP interno en red Docker"
+    },
+    {
+      "url": "http://localhost:8000",
+      "description": "Servidor local (desarrollo)"
+    }
+  ],
+  "paths": {
+    "/medicamento": {
+      "get": {
+        "summary": "Ficha completa de un medicamento (por nregistro o cn).",
+        "operationId": "obtener_medicamento",
+        "parameters": [
+          {
+            "name": "cn",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "nregistro",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Medicamento"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Debe indicar 'cn' o 'nregistro'"
+          },
+          "404": {
+            "description": "No encontrado"
+          }
+        }
+      }
+    },
+    "/medicamentos": {
+      "get": {
+        "summary": "Listado de medicamentos con filtros regulatorios.",
+        "operationId": "buscar_medicamentos",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Medicamentos"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ficha-tecnica/buscar": {
+      "post": {
+        "summary": "Busca texto en secciones concretas de la ficha técnica.",
+        "operationId": "buscar_en_ficha_tecnica",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "seccion": {
+                      "type": "string"
+                    },
+                    "texto": {
+                      "type": "string"
+                    },
+                    "contiene": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Medicamentos"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/presentaciones": {
+      "get": {
+        "summary": "Presentaciones de un medicamento (filtros cn, nregistro...).",
+        "operationId": "listar_presentaciones",
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Presentaciones"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/presentacion": {
+      "get": {
+        "summary": "Detalle de una presentación concreta (por CN).",
+        "operationId": "obtener_presentacion",
+        "parameters": [
+          {
+            "name": "cn",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Presentacion"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vmpp": {
+      "get": {
+        "summary": "Equivalentes clínicos VMP/VMPP.",
+        "operationId": "buscar_vmpp",
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VMPPs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/maestras": {
+      "get": {
+        "summary": "Catálogos ATC, PAs, formas farmacéuticas, laboratorios…",
+        "operationId": "consultar_maestras",
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Maestras"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/registro-cambios": {
+      "get": {
+        "summary": "Historial de altas, bajas y modificaciones.",
+        "operationId": "registro_cambios",
+        "parameters": [
+          {
+            "name": "fecha",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "nregistro",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistroCambios"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/problemas-suministro": {
+      "get": {
+        "summary": "Problemas de suministro activos.",
+        "operationId": "problemas_suministro",
+        "parameters": [
+          {
+            "name": "cn",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemasSuministro"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/doc-secciones": {
+      "get": {
+        "summary": "Metadatos de secciones de FT/prospecto.",
+        "operationId": "doc_secciones",
+        "parameters": [
+          {
+            "name": "tipo_doc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocSecciones"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/doc-contenido": {
+      "get": {
+        "summary": "Contenido HTML/JSON de secciones de FT/prospecto.",
+        "operationId": "doc_contenido",
+        "parameters": [
+          {
+            "name": "tipo_doc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          },
+          {
+            "name": "seccion",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocContenido"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/descargar-documentos": {
+      "get": {
+        "summary": "Descarga PDFs y programa ingesta RAG en background.",
+        "operationId": "descargar_documentos",
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Presentaciones"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/documentos-markdown": {
+      "get": {
+        "summary": "Descarga PDFs, los convierte a Markdown y programa ingesta.",
+        "operationId": "documentos_markdown",
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Presentaciones"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/consultar-documento": {
+      "get": {
+        "summary": "RAG + reranking sobre PDFs reguladores.",
+        "operationId": "consultar_documento",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RAGHits"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/descargar-imagenes": {
+      "get": {
+        "summary": "Descarga imágenes a alta resolución.",
+        "operationId": "descargar_imagenes",
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Presentaciones"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identificar-medicamento": {
+      "get": {
+        "summary": "Identifica presentaciones según Nº Registro, CN o nombre.",
+        "operationId": "identificar_medicamento",
+        "responses": {
+          "200": {
+            "description": "Respuesta OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Presentaciones"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Medicamento": {
+        "type": "object",
+        "description": "Información detallada de un medicamento (CIMA)",
+        "additionalProperties": true
+      },
+      "Medicamentos": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Medicamento"
+        },
+        "description": "Lista de Medicamento"
+      },
+      "Presentacion": {
+        "type": "object",
+        "description": "Detalle de una presentación (CN)",
+        "additionalProperties": true
+      },
+      "Presentaciones": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Presentacion"
+        },
+        "description": "Lista de Presentacion"
+      },
+      "VMPP": {
+        "type": "object",
+        "description": "Equivalentes clínicos VMP/VMPP",
+        "additionalProperties": true
+      },
+      "VMPPs": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VMPP"
+        },
+        "description": "Lista de VMPP"
+      },
+      "Maestra": {
+        "type": "object",
+        "description": "Elemento de catálogo (ATC, PA, etc.)",
+        "additionalProperties": true
+      },
+      "Maestras": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Maestra"
+        },
+        "description": "Lista de Maestra"
+      },
+      "ProblemasSuministro": {
+        "type": "object",
+        "description": "Problemas de suministro",
+        "additionalProperties": true
+      },
+      "RegistroCambios": {
+        "type": "object",
+        "description": "Registro de cambios",
+        "additionalProperties": true
+      },
+      "DocSeccion": {
+        "type": "object",
+        "description": "Metadatos de sección de documento regulador",
+        "additionalProperties": true
+      },
+      "DocSecciones": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/DocSeccion"
+        },
+        "description": "Lista de DocSeccion"
+      },
+      "DocContenido": {
+        "type": "object",
+        "description": "Contenido de sección en HTML/JSON",
+        "additionalProperties": true
+      },
+      "RAGHit": {
+        "type": "object",
+        "description": "Resultado individual de RAG + reranking",
+        "additionalProperties": true
+      },
+      "RAGHits": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RAGHit"
+        },
+        "description": "Lista de RAGHit"
+      }
+    }
+  }
+}

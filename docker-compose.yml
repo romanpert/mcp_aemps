@@ -1,0 +1,15 @@
+services:
+  mcp_server:
+    build: ./
+    container_name: mcp_aemps
+    ports:
+      - "8000:8000"
+    volumes:
+      # Monta la carpeta 'data' de tu host en /data del contenedor
+      - ./data:/data
+    restart: unless-stopped
+  redis:
+    image: redis:8.0-alpine
+    container_name: redis_mcp
+    ports:
+      - "6379:6379"

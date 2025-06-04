@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aemps-cima-mcp": {
+      "command": "mcp-proxy",
+      "args": ["http://127.0.0.1:8000/mcp"]
+    }
+  }
+}

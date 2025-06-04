@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+httpx
+pandas
+aiohttp
+mcp-proxy
+fastapi-mcp
+pillow
+openpyxl
+authlib
+fastapi-cache2
+aioredis
+fastapi-limiter
+redis
+python-jose[cryptography]
+passlib[bcrypt]
