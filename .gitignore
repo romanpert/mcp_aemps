@@ -1,3 +1,12 @@
-*/test/*
+# 1) Ignorar cualquier carpeta llamada "test" en cualquier nivel
+**/test/**
+
+# 2) Ignorar únicamente el archivo dependencies.py en la ruta especificada
 mcp_aemps/app/dependencies.py
-mcp_aemps/data/*
+
+# 3) Para que Git incluya la carpeta data/ (y sus subcarpetas),
+#    debemos "deshacer" la exclusión de nivel superior, y luego
+#    volver a ignorar todos los archivos dentro de data/.
+#    Con esto, Git rastrea la carpeta y su estructura, pero no sus contenidos.
+!mcp_aemps/data/
+mcp_aemps/data/**/*
