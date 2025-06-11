@@ -1,80 +1,86 @@
+# app/docs_utils.py
 """
-Script para descargar el listado de Presentaciones de la AEMPS.
+Utilidades asíncronas para obtener y gestionar descargas de la AEMPS.
 """
-
 import os
 import re
-import requests
 import logging
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
+from pathlib import Path
+import httpx
 
 logger = logging.getLogger(__name__)
 
-def download_presentaciones(dest_path="data/documentacion/Presentaciones.xls"):
-    """
-    Descarga el fichero Excel de presentaciones desde la AEMPS
-    y lo guarda en la ruta local especificada.
-    """
-    url = "https://listadomedicamentos.aemps.gob.es/Presentaciones.xls"
-    # Crear directorio si no existe
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    
-    # Petición HTTP para descargar el fichero
-    resp = requests.get(url, stream=True)
-    resp.raise_for_status()
-    
-    # Guardar el contenido en modo binario
-    with open(dest_path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-    
-    # print(f"Fichero descargado y guardado en: {dest_path}")
 
-def download_nomenclator_csv(
-    dest_dir: str = "data/documentacion",
-    url: str = (
+def get_presentaciones_url() -> str:
+    """
+    URL para descargar Presentaciones de la AEMPS.
+    """
+    return "https://listadomedicamentos.aemps.gob.es/Presentaciones.xls"
+
+
+def get_nomenclator_url() -> str:
+    """
+    URL para descargar el CSV de Nomenclátor de la AEMPS.
+    """
+    return (
         "https://listadomedicamentos.aemps.gob.es/"
         "nomenclator.do?metodo=buscarProductos&especialidad=%%%&d-4015021-e=1&6578706f7274=1"
-    ),
-    timeout: int = 30
-) -> str:
+    )
+
+
+async def download_presentaciones(dest_path: Path, timeout: int = 60) -> Path:
     """
-    Descarga el CSV de Nomenclátor de la AEMPS a dest_dir.  
-    - Extrae el filename de Content-Disposition o de Last-Modified/url.  
-    - Compara prefijo YYYYMMDD con los existentes.  
-    - Si existe uno igual o más reciente, devuelve esa ruta.  
-    - Si no, borra solo los CSVs antiguos de nomenclátor y guarda el nuevo.  
-    Devuelve la ruta al CSV final.
+    Descarga asíncrona de Presentaciones.xls y guarda en dest_path.
     """
-    os.makedirs(dest_dir, exist_ok=True)
+    url = get_presentaciones_url()
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(url, follow_redirects=True)
+        resp.raise_for_status()
+        dest_path.write_bytes(resp.content)
+    logger.info(f"Descargado Presentaciones.xls a: {dest_path}")
+    return dest_path
 
-    # 1) Obtengo cabeceras con una petición ligera (HEAD) si el servidor lo soporta
-    try:
-        head = requests.head(url, timeout=timeout)
-        head.raise_for_status()
-    except Exception:
-        head = None  # caigo luego a GET completo
 
-    # 2) Descargo con GET (streaming)
-    resp = requests.get(url, stream=True, timeout=timeout)
-    resp.raise_for_status()
+async def download_nomenclator_csv(
+    dest_dir: Path,
+    url: str = None,
+    timeout: int = 60
+) -> Path:
+    """
+    Descarga asíncrona del CSV de Nomenclátor, gestiona filenames y caché local:
+    - Usa HEAD para extraer Content-Disposition.
+    - Si existe CSV igual o más reciente, no descarga.
+    - Borra CSVs antiguos si procede.
+    """
+    if url is None:
+        url = get_nomenclator_url()
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3) Determino filename
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        # 1) HEAD
+        try:
+            head = await client.head(url, follow_redirects=True)
+            head.raise_for_status()
+        except Exception:
+            head = None
+
+        # 2) GET
+        resp = await client.get(url, follow_redirects=True)
+        resp.raise_for_status()
+
+    # 3) Determinar filename
     filename = None
-    if head is not None:
-        cd = head.headers.get("content-disposition", "")
-    else:
-        cd = resp.headers.get("content-disposition", "")
-    m = re.search(r'filename="?([^"]+)"?', cd)
+    cd_header = head.headers.get("content-disposition", "") if head else resp.headers.get("content-disposition", "")
+    m = re.search(r'filename="?([^\";]+)"?', cd_header)
     if m:
         filename = m.group(1)
-        logger.debug("Filename from Content-Disposition: %s", filename)
+        logger.debug(f"Filename from Content-Disposition: {filename}")
 
     if not filename:
-        # Fallback: uso Last-Modified o UTC ahora
         last_mod = (head or resp).headers.get("last-modified")
         if last_mod:
             try:
@@ -84,42 +90,36 @@ def download_nomenclator_csv(
         else:
             dt = datetime.utcnow()
         date_str = dt.strftime("%Y%m%d")
-
-        # extraigo un basename razonable de la URL
         path = urlparse(url).path
         base = os.path.basename(path) or "nomenclator.csv"
         filename = f"{date_str}_{base}"
-        logger.debug("Fallback filename: %s", filename)
+        logger.debug(f"Fallback filename: {filename}")
 
-    # 4) Extraigo prefijo fecha YYYYMMDD
-    mdate = re.match(r"(\d{8})", filename)
-    new_date = mdate.group(1) if mdate else None
-
-    # 5) Reviso CSVs existentes
+    # 4) Comparar con existentes
+    prefix = re.match(r"(\d{8})", filename)
+    new_date = prefix.group(1) if prefix else None
     existing = [f for f in os.listdir(dest_dir) if f.lower().endswith(".csv")]
     for f in existing:
-        # extraigo su fecha
         mf = re.match(r"(\d{8})", f)
         if mf and new_date and mf.group(1) >= new_date:
-            logger.info("Ya existe CSV con fecha %s: %s, no descargo.", mf.group(1), f)
-            return os.path.join(dest_dir, f)
+            logger.info(f"CSV existente más reciente o igual: {f}, omitiendo descarga.")
+            return dest_dir / f
 
-    # 6) Borro solo los CSVs antiguos de nomenclátor
+    # 5) Borrar CSVs antiguos
     for f in existing:
         mf = re.match(r"(\d{8})", f)
         if not mf or (new_date and mf.group(1) < new_date):
             try:
-                os.remove(os.path.join(dest_dir, f))
-                logger.debug("CSV antiguo borrado: %s", f)
+                os.remove(dest_dir / f)
+                logger.debug(f"CSV antiguo borrado: {f}")
             except Exception:
-                logger.warning("No se pudo borrar viejo CSV: %s", f)
+                logger.warning(f"No se pudo borrar viejo CSV: {f}")
 
-    # 7) Grabo el nuevo fichero
-    dest_path = os.path.join(dest_dir, filename)
+    # 6) Guardar nuevo
+    dest_path = dest_dir / filename
     with open(dest_path, "wb") as fd:
-        for chunk in resp.iter_content(chunk_size=8192):
-            if chunk:
-                fd.write(chunk)
+        for chunk in resp.iter_bytes(chunk_size=8192):
+            fd.write(chunk)
+    logger.info(f"Descargado nuevo CSV a: {dest_path}")
 
-    logger.info("Descargado nuevo CSV a: %s", dest_path)
     return dest_path

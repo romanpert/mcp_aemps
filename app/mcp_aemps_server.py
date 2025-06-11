@@ -298,6 +298,7 @@ async def buscar_en_ficha_tecnica(
     "/presentaciones",
     operation_id="listar_presentaciones",
     summary="Listar presentaciones de un medicamento con filtros (cn, nregistro, etc.)",
+    description=constant.presentaciones_description,
     response_model=Dict[str, Any],
 )
 async def listar_presentaciones(
@@ -338,6 +339,7 @@ async def listar_presentaciones(
     "/presentacion",
     operation_id="obtener_presentacion",
     summary="Detalle de una o varias presentaciones (por uno o varios CN)",
+    description=constant.presentacion_description,
     response_model=Dict[str, Any],
 )
 async def obtener_presentacion(
@@ -508,7 +510,6 @@ async def registro_cambios(
 
     return respuesta
 
-
 # ---------------------------------------------------------------------------
 # 8 · Problemas de suministro
 # ---------------------------------------------------------------------------
@@ -525,8 +526,11 @@ async def problemas_suministro(
         description="Uno o más Códigos Nacionales. Repetir parámetro: ?cn=123&cn=456"
     )
 ) -> Dict[str, Any]:
+    # Construir metadatos base
     parametros = {"cn": cn}
     metadatos = _build_metadata(parametros)
+
+    # Agregar tipos de problema a metadata
     tipo_problema_suministros = {
         1: "Consultar Nota Informativa",
         2: "Suministro solo a hospitales",
@@ -540,13 +544,20 @@ async def problemas_suministro(
     }
     metadatos["metadata"]["tipo_problema_suministros"] = tipo_problema_suministros
 
-    if cn is None:
-        resultado = await cima.psuministro(None)
-        if isinstance(resultado, dict):
-            return {**resultado, **metadatos}
-        return {"data": resultado, **metadatos}
+    # Helper: formatear solo datos sin metadata
+    def extract_data(resp: Any) -> Any:
+        formatted = format_response(resp)
+        # Si format_response devuelve un dict con clave 'data', extraerla
+        return formatted.get('data', formatted)
 
-    tasks = [cima.psuministro(c) for c in cn]
+    # Caso: sin filtro de CN (todos)
+    if cn is None:
+        resultados = await safe_cima_call(cima.psuministro, None)
+        data = extract_data(resultados)
+        return {"data": data, "metadata": metadatos["metadata"]}
+
+    # Llamadas concurrentes por cada CN
+    tasks = [safe_cima_call(cima.psuministro, c) for c in cn]
     respuestas = await asyncio.gather(*tasks, return_exceptions=True)
 
     result_dict: Dict[str, Any] = {}
@@ -557,11 +568,10 @@ async def problemas_suministro(
             errors[codigo] = {"detail": str(resp)}
             continue
 
-        if isinstance(resp, dict):
-            result_dict[codigo] = {**resp, **metadatos}
-        else:
-            result_dict[codigo] = {"data": resp, **metadatos}
+        # Formatear y extraer solo los datos
+        result_dict[codigo] = extract_data(resp)
 
+    # Si no hay resultados exitosos, 404
     if not result_dict:
         raise HTTPException(
             status_code=404,
@@ -572,10 +582,12 @@ async def problemas_suministro(
             }
         )
 
-    response = {**result_dict, **metadatos}
+    # Construir respuesta global
+    response: Dict[str, Any] = {"data": result_dict, "metadata": metadatos["metadata"]}
     if errors:
         response["errors"] = errors
     return response
+
 
 # ---------------------------------------------------------------------------
 # 9 · Documentos segmentados – Secciones
@@ -602,15 +614,18 @@ async def doc_secciones(
     if not (nregistro or cn):
         raise HTTPException(status_code=400, detail="Se requiere 'nregistro' o 'cn'.")
 
-    resultados = await cima.doc_secciones(tipo_doc, nregistro=nregistro, cn=cn)
+    # Llamada segura a la API externa
+    resultados = await safe_cima_call(
+        cima.doc_secciones,
+        tipo_doc,
+        nregistro=nregistro,
+        cn=cn
+    )
 
-    # Construir metadatos usando la función auxiliar
+    # Construir metadatos y formatear respuesta
     parametros = {"tipo_doc": tipo_doc, "nregistro": nregistro, "cn": cn}
     metadatos = _build_metadata(parametros)
-
-    respuesta = format_response(resultados, metadatos)
-
-    return respuesta
+    return format_response(resultados, metadatos)
 
 # ---------------------------------------------------------------------------
 # 9 · Documentos segmentados – Contenido
@@ -640,15 +655,19 @@ async def doc_contenido(
     if not (nregistro or cn):
         raise HTTPException(status_code=400, detail="Se requiere 'nregistro' o 'cn'.")
 
-    resultados = await cima.doc_contenido(tipo_doc, nregistro=nregistro, cn=cn, seccion=seccion)
+    # Llamada segura a la API externa
+    resultados = await safe_cima_call(
+        cima.doc_contenido,
+        tipo_doc,
+        nregistro=nregistro,
+        cn=cn,
+        seccion=seccion
+    )
 
-    # Construir metadatos usando la función auxiliar
+    # Construir metadatos y formatear respuesta
     parametros = {"tipo_doc": tipo_doc, "nregistro": nregistro, "cn": cn, "seccion": seccion}
     metadatos = _build_metadata(parametros)
-
-    respuesta = format_response(resultados, metadatos)
-
-    return respuesta
+    return format_response(resultados, metadatos)
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +677,7 @@ async def doc_contenido(
     "/notas",
     operation_id="listar_notas",
     summary="Listado de notas de seguridad para uno o varios registros",
+    description=constant.listar_notas_description,
     response_model=Dict[str, Any],
 )
 async def listar_notas(
@@ -803,7 +823,8 @@ async def obtener_materiales(
 @app.get(
     "/doc-html/ft",
     operation_id="html_ficha_tecnica_multiple",
-    summary="Descarga ZIP de fichas técnicas para varios registros"
+    summary="Descarga ZIP de fichas técnicas para varios registros",
+    description=constant.html_ft_multiple_description,
 )
 async def html_ficha_tecnica_multiple(
     nregistro: List[str] = Query(..., description="Nº de registro (repetir)"),
@@ -837,7 +858,8 @@ async def html_ficha_tecnica_multiple(
 @app.get(
     "/doc-html/ft/{nregistro}/{filename}",
     operation_id="html_ficha_tecnica",
-    summary="HTML completo de ficha técnica (único registro)"
+    summary="HTML completo de ficha técnica (único registro)",
+    description=constant.html_ft_description,
 )
 async def html_ficha_tecnica(
     nregistro: str = Path(..., description="Número de registro"),
@@ -859,7 +881,8 @@ async def html_ficha_tecnica(
 @app.get(
     "/doc-html/p",
     operation_id="html_prospecto_multiple",
-    summary="Descarga ZIP de prospectos para varios registros"
+    summary="Descarga ZIP de prospectos para varios registros",
+    description=constant.html_p_multiple_description,
 )
 async def html_prospecto_multiple(
     nregistro: List[str] = Query(..., description="Nº de registro (repetir)"),
@@ -889,7 +912,8 @@ async def html_prospecto_multiple(
 @app.get(
     "/doc-html/p/{nregistro}/{filename}",
     operation_id="html_prospecto",
-    summary="HTML completo de prospecto (único registro)"
+    summary="HTML completo de prospecto (único registro)",
+    description=constant.html_p_description
 )
 async def html_prospecto(
     nregistro: str = Path(..., description="Número de registro"),
@@ -912,6 +936,7 @@ async def html_prospecto(
     "/descargar-ipt",
     operation_id="descargar_ipt",
     summary="Descargar IPT para uno o varios CN o registros",
+    description=constant.descargar_ipt_description,
     response_model=Dict[str, Any],
 )
 async def descargar_ipt(
@@ -981,7 +1006,8 @@ async def descargar_ipt(
     "/identificar-medicamento",
     operation_id="identificar_medicamento",
     summary="Identifica hasta 10 presentaciones en base a CN, nregistro o nombre",
-    description=constant.identificar_medicamento,
+    description=constant.identificar_medicamento_description,
+    tags=["Presentaciones"],
     response_model=Dict[str, Any],
 )
 async def identificar_medicamento(
@@ -1048,11 +1074,7 @@ async def identificar_medicamento(
     "/nomenclator",
     operation_id="buscar_nomenclator",
     summary="Busca productos farmacéuticos en el Nomenclátor de facturación",
-    description="""
-        Permite buscar y filtrar productos farmacéuticos por cualquiera de las columnas:
-        Código Nacional, Nombre, Tipo de fármaco, Principio activo, Laboratorio, Estado,
-        fechas de alta/baja, aportación, precios, agrupación, flags clínicos, etc.
-    """,
+    description=constant.nomenclator_description,
     tags=["Nomenclátor"],
     response_model=Dict[str, Any],
 )

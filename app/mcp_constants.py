@@ -104,618 +104,758 @@ Eres un **agente farmacéutico digital** en España con acceso a las siguientes 
 )
 
 medicamento_description = """
-Devuelve todos los datos regulatorios disponibles para un medicamento concreto,
-identificado por su Código Nacional (`cn`) o por su Número de Registro (`nregistro`).
+Devuelve la **ficha completa** de un medicamento concreto,  
+identificado por su Código Nacional (`cn`) o por su Número de Registro AEMPS (`nregistro`).
 
 **Uso**:
-- Si se conoce el Código Nacional (CN), pásalo en el parámetro `cn`.
-- Si se conoce el Número de Registro AEMPS, pásalo en `nregistro`.
+- Si conoces el Código Nacional (solo dígitos), pásalo en `cn`.  
+- Si conoces el Número de Registro AEMPS (solo dígitos), pásalo en `nregistro`.  
 - No es necesario aportar ambos; basta uno de los dos.
 
 **Respuesta**:  
-Un objeto JSON que contiene información completa sobre el medicamento e
-información meta asociada (descargo, fecha de obtención de información)
+Objeto JSON con la ficha completa del medicamento y metadatos asociados  
+(descargo de responsabilidad, fecha de obtención de la información).
 
-**Errores posibles**:
-- `400 Bad Request`: Ningún parámetro (`cn` o `nregistro`) ha sido proporcionado.
-- `404 Not Found`: No se localiza ningún medicamento con esos datos.
+**Códigos de respuesta**:
+- **200 OK**: Información encontrada.  
+- **400 Bad Request**: No se ha proporcionado `cn` ni `nregistro`.  
+- **404 Not Found**: No existe ningún medicamento con los datos indicados.
 """
 
 medicamentos_description = """
-Devuelve un listado paginado de medicamentos que cumplen las condiciones de búsqueda
-introducidas. Se pueden aplicar más de 20 filtros distintos para refinar los resultados.
+Devuelve un **listado paginado** de medicamentos que cumplen los filtros especificados.
 
 **Uso**:
-- Proporciona uno o varios de los parámetros facultativos para filtrar.  
-- Si no se especifica ningún filtro, se listan todos los medicamentos (paginados).  
-- El parámetro `pagina` indica el número de página de resultados (mínimo 1).
+- Proporciona uno o varios parámetros para filtrar la búsqueda.  
+- Si no se especifica ningún filtro, se listan **todos** los medicamentos (paginados).  
+- El parámetro `pagina` indica la página de resultados (entero ≥ 1; por defecto 1).
 
-**Parámetros disponibles**:
-- `nombre` (str): Nombre del medicamento (coincidencia parcial o exacta).  
-- `laboratorio` (str): Nombre del laboratorio fabricante.  
-- `practiv1` (str): Nombre del principio activo principal.  
-- `practiv2` (str): Nombre de un segundo principio activo.  
-- `idpractiv1` (str): ID numérico del principio activo principal.  
-- `idpractiv2` (str): ID numérico de un segundo principio activo.  
-- `cn` (str): Código Nacional del medicamento.  
-- `atc` (str): Código ATC o descripción parcial del mismo.  
-- `nregistro` (str): Número de registro AEMPS.  
-- `npactiv` (int): Número de principios activos asociados.  
-- `triangulo` (int): 1 = Tienen triángulo, 0 = No tienen triángulo.  
-- `huerfano` (int): 1 = Huérfano, 0 = No huérfano.  
-- `biosimilar` (int): 1 = Biosimilar, 0 = No biosimilar.  
-- `sust` (int):  
-  - 1 = Biológicos  
-  - 2 = Principios activos de estrecho margen terapéutico  
-  - 3 = Medicamentos con control médico o medidas especiales de seguridad  
-  - 4 = Medicamentos inhalados para aparato respiratorio  
-  - 5 = Medicamentos de estrecho margen terapéutico  
-- `vmp` (str): ID del código VMP para equivalentes clínicos.  
-- `comerc` (int): 1 = Comercializados, 0 = No comercializados.  
-- `autorizados` (int): 1 = Solo medicamentos autorizados, 0 = Solo no autorizados.  
-- `receta` (int): 1 = Con receta, 0 = Sin receta.  
-- `estupefaciente` (int): 1 = Incluye estupefacientes, 0 = Excluye.  
-- `psicotropo` (int): 1 = Incluye psicótropos, 0 = Excluye.  
-- `estuopsico` (int): 1 = Incluye estupefacientes o psicótropos, 0 = Excluye.  
-- `pagina` (int): Número de página (mínimo 1).  
+**Parámetros disponibles** (todos opcionales):
+- `nombre` (str): nombre (coincidencia parcial o exacta).  
+- `laboratorio` (str): laboratorio fabricante.  
+- `practiv1`, `practiv2` (str): nombre del principio activo principal o secundario.  
+- `idpractiv1`, `idpractiv2` (str): ID numérico del principio activo (solo dígitos).  
+- `cn` (str): Código Nacional (solo dígitos).  
+- `atc` (str): código ATC o descripción parcial.  
+- `nregistro` (str): Número de Registro AEMPS (solo dígitos).  
+- `npactiv` (int): número de principios activos asociados.  
+- `triangulo`, `huerfano`, `biosimilar`, `comerc`, `autorizados`, `receta`, `estupefaciente`, `psicotropo`, `estuopsico` (int; 0 o 1): flags específicos.  
+- `sust` (int; 1–5): tipo especial de medicamento.  
+- `vmp` (str): ID de código VMP para equivalentes clínicos.  
+- `pagina` (int; ≥1): página de resultados.
 
 **Respuesta**:  
-Un objeto JSON que contiene:  
-1. `resultados`: lista de medicamentos que cumplen los filtros.
-2. `meta`: información adicional obligatoria  
+JSON con dos claves:
+1. `resultados`: lista de ficheras de medicamentos.  
+2. `meta`:  
    - `datos_obtenidos`: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”  
-   - `descargo`: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
+   - `descargo`: “Esta información no constituye consejo médico…”.
+   - otros campos de utilidad.
 
-**Errores posibles**:
-- `400 Bad Request`: Parámetros fuera de rango o tipo inválido.  
-- `404 Not Found`: No se encontraron medicamentos para los filtros proporcionados.
+**Códigos HTTP**:
+- **200 OK**: listado devuelto con éxito.  
+- **400 Bad Request**: parámetro fuera de rango o tipo inválido.  
+- **404 Not Found**: no hay resultados para los filtros indicados.  
+- **502 Bad Gateway**: error en la API externa CIMA.  
+- **500 Internal Server Error**: error interno del servidor.
 """
 
+
 buscar_ficha_tecnica_description = """
-Permite realizar búsquedas textuales dentro de secciones concretas de la ficha técnica de uno o varios medicamentos.
+Realiza búsquedas textuales dentro de secciones concretas de la ficha técnica de uno o varios medicamentos.
 
 **Uso**:
-- Envía una lista de reglas en formato JSON en el cuerpo de la petición.
-- Cada regla debe incluir:
-  - `seccion` (string): sección de la ficha técnica donde buscar, en formato “N” o “N.N” (por ejemplo, “4.1”).
-  - `texto` (string): palabra o frase a buscar en esa sección.
-  - `contiene` (int):  
-    - `1` para indicar que la sección debe contener ese texto.  
-    - `0` para indicar que la sección no debe contener ese texto.
+- Envía en el cuerpo un array JSON de reglas de búsqueda.  
+- Cada regla (objeto) debe tener:
+  - `seccion` (str): sección de la ficha técnica en formato “N” o “N.N” (p. ej. “4.1”).  
+  - `texto` (str): palabra o frase a buscar.  
+  - `contiene` (int): 1 = debe contener ese texto; 0 = no debe contenerlo.
 
-**Estructura del cuerpo**:
-```json
+**Ejemplo de cuerpo**:
 [
-  {
-    "seccion": "4.1",
-    "texto": "cáncer",
-    "contiene": 1
-  }
-]
-```
-Para combinar condiciones (por ejemplo, incluir “acidez” y excluir “estómago” en la misma sección):
-
-```json
-[
-  {
-    "seccion": "4.1",
-    "texto": "acidez",
-    "contiene": 1
-  },
-  {
-    "seccion": "4.1",
-    "texto": "estómago",
-    "contiene": 0
-  }
-]
-```
-
-**Respuesta**:
-Un objeto JSON con:
-
-- `resultados`: lista de objetos que contienen el texto indicado.
-`meta`: información obligatoria
-- `datos_obtenidos`: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”
-- `descargo`: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
-
-**Ejemplo de llamada**:
-POST /ficha-tecnica/buscar
-Content-Type: application/json
-
-[
-  {
-    "seccion": "4.1",
-    "texto": "cáncer",
-    "contiene": 1
-  }
+  { "seccion": "4.1", "texto": "cáncer",   "contiene": 1 },
+  { "seccion": "4.1", "texto": "estómago", "contiene": 0 }
 ]
 
-**Errores posibles**:
+Respuesta (200 OK):
+Objeto JSON con:
+  1. resultados: lista de coincidencias encontradas.
 
-- 400 Bad Request:
-  - El cuerpo no es un array de reglas con los campos `seccion`, `texto` y `contiene`.
-  - Alguna regla carece de uno de esos campos o `contiene` no es 0 ni 1.
+  2. meta:
+    -datos_obtenidos: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”
+    -descargo: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
+    -otros campos de utilidad.
 
-- 404 Not Found: No se encontró ningún medicamento que cumpla las reglas indicadas.
+  3. Códigos HTTP:
+    200 OK: búsqueda completada con éxito.
+    400 Bad Request: cuerpo inválido, no es un array de reglas, falta algún campo o contiene no es 0/1.
+    404 Not Found: no hay ninguna ficha técnica que cumpla las reglas indicadas.
 """
 
 presentaciones_description = """
-Devuelve un listado paginado de presentaciones de medicamentos según los filtros indicados.
+Devuelve un **listado paginado** de presentaciones de medicamentos según filtros opcionales.
 
 **Uso**:
-- Puedes filtrar por uno o varios de los parámetros disponibles.
-- El parámetro `pagina` indica el número de página (mínimo 1).
+- Envia los filtros como parámetros de consulta.  
+- Si no se especifica ningún filtro, se listan **todas** las presentaciones (paginadas).  
+- `pagina` indica la página de resultados (entero ≥ 1; por defecto 1).
 
-**Parámetros disponibles**:
-- `cn` (str): Código Nacional del medicamento.
-- `nregistro` (str): Número de registro AEMPS.
-- `vmp` (str): ID del código VMP para equivalentes clínicos.
-- `vmpp` (str): ID del código VMPP.
-- `idpractiv1` (str): ID del principio activo.
-- `comerc` (int): 1 = Comercializados, 0 = No comercializados.
-- `estupefaciente` (int): 1 = Incluye estupefacientes, 0 = Excluye.
-- `psicotropo` (int): 1 = Incluye psicótropos, 0 = Excluye.
-- `estuopsico` (int): 1 = Incluye estupefacientes o psicótropos, 0 = Excluye.
-- `pagina` (int): Número de página de resultados (mínimo 1).
+**Parámetros disponibles** (todos opcionales):
+- `cn` (str): Código Nacional (solo dígitos).  
+- `nregistro` (str): Número de registro AEMPS (solo dígitos).  
+- `vmp`    (str): ID del código VMP para equivalentes clínicos.  
+- `vmpp`   (str): ID del código VMPP.  
+- `idpractiv1` (str): ID numérico del principio activo (solo dígitos).  
+- `comerc`      (int; 0 o 1): 1 = comercializado, 0 = no comercializado.  
+- `estupefaciente`, `psicotropo`, `estuopsico` (int; 0 o 1): flags de inclusión/exclusión.  
+- `pagina`      (int; ≥ 1): página de resultados (por defecto 1).
 
-**Respuesta**:
-Un objeto JSON que contiene:
-1. `resultados`: lista de presentaciones que cumplen los filtros.
-2. `meta`: información adicional obligatoria
-   - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-   - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+**Respuesta** (200 OK):  
+JSON con:
+1. `resultados`: lista de presentaciones que cumplen los filtros.  
+2. `meta`:  
+   - `datos_obtenidos`: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”  
+   - `descargo`: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
 
-**Errores posibles**:
-- `400 Bad Request`: Parámetros fuera de rango o tipo inválido.
-- `404 Not Found`: No se encontraron presentaciones para los filtros proporcionados.
+**Códigos HTTP**:
+- **200 OK**: listado devuelto con éxito.  
+- **400 Bad Request**: parámetro fuera de rango o tipo inválido.  
+- **404 Not Found**: no hay presentaciones que cumplan los filtros indicados.  
 """
 
 presentacion_description = """
-Obtiene detalles de presentación para uno o varios medicamentos identificados por su Código Nacional (CN).
+Obtiene los detalles de presentación para uno o varios medicamentos identificados por su Código Nacional (CN).
 
 **Uso**:
-- Para un único CN, pasa `?cn=123456789`.
-- Para múltiples CN, repite el parámetro: `?cn=123&cn=456&cn=789`.
+- Envia uno o varios `cn` como parámetros de consulta:  
+  - Para un único CN: `GET /presentacion?cn=123456789`  
+  - Para varios CN: `GET /presentacion?cn=123&cn=456&cn=789`
 
 **Parámetro**:
-- `cn` (List[str]): Lista de Códigos Nacionales. Se repite el parámetro en la URL para cada CN.
+- `cn` (List[str], requerido): uno o varios Códigos Nacionales (solo dígitos). Repetir `cn` por cada valor.
 
-**Respuesta**:
-- Si solo hay un CN, devuelve directamente el objeto con todos los detalles de esa presentación:
-  - `cn` (Código Nacional)
-  - `nregistro` (Número de registro AEMPS)
-  - `forma` (forma farmacéutica)
-  - `dosis` (dosificación)
-  - `laboratorio` (nombre del laboratorio)
+**Respuesta** (200 OK):
+- **Caso único** (`len(cn) == 1`): devuelve directamente un objeto con:
+  - `cn` (Código Nacional)  
+  - `nregistro` (Número de registro AEMPS)  
+  - `forma` (forma farmacéutica)  
+  - `dosis` (dosificación)  
+  - `laboratorio` (laboratorio fabricante)  
+  - `meta`:  
+    - `datos_obtenidos`: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”  
+    - `descargo`: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
 
-- Si hay varios CN, devuelve un diccionario con la forma:
-  ```json
+- **Caso múltiple** (`len(cn) > 1`): devuelve un objeto mapeando cada CN a su detalle (incluyendo `meta`), por ejemplo:
   {
-    "123456789": { ... detalle ... },
-    "987654321": { ... detalle ... }
+    "123": { …detalle… },
+    "456": { …detalle… },
+    "errors": {
+      "789": { "status_code": 404, "detail": "No encontrado" }
+    }
   }
-  ```
 
-En ambos casos, se incluye la clave `meta` con:
-- `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-- `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
-
-**Errores posibles**:
-- `400 Bad Request`: No se proporcionó ningún parámetro `cn`.
-- `502 Bad Gateway`: Error upstream obteniendo presentación.
-- `500 Internal Server Error`: Error interno procesando presentación.
+Códigos HTTP:
+  200 OK: petición procesada con éxito (total o parcialmente).
+  400 Bad Request: no se ha proporcionado ningún cn.
+  404 Not Found: en el caso único, si no existe el CN; en el múltiple, si fallan todos los CN.
+  502 Bad Gateway: error al obtener datos de la API externa.
+  500 Internal Server Error: error interno al procesar la petición.
 """
 
 vmpp_description = """
-Devuelve una lista de equivalentes clínicos (VMP/VMPP) según los filtros proporcionados.
+Devuelve un **listado (paginado)** de equivalentes clínicos VMP/VMPP según filtros opcionales.
 
-**Parámetros disponibles**:
-- `practiv1` (str): Nombre del principio activo principal.
-- `idpractiv1` (str): ID del principio activo principal.
-- `dosis` (str): Dosis del medicamento.
-- `forma` (str): Nombre de la forma farmacéutica.
-- `atc` (str): Código ATC o descripción parcial.
-- `nombre` (str): Nombre del medicamento.
-- `modoArbol` (int): Si se incluye (cualquier valor), devuelve resultados en modo jerárquico.
+**Uso**:
+- Envía los filtros como parámetros de consulta.  
+- Si no se especifica ningún filtro, devolverá todos los registros (si la API los soporta).  
+- `pagina` indica la página de resultados (entero ≥ 1; por defecto 1).
 
-**Respuesta**:
-Un objeto JSON que contiene:
-1. `resultados`: lista de VMP/VMPP que cumplen los filtros. Cada elemento incluye:
-   - `vmp` (ID de VMP)
-   - `vmpp` (ID de VMPP)
-   - `principio_activo` (nombre del PA)
-   - `dosis` (dosificación)
-   - `forma` (forma farmacéutica)
-   - `atc` (código ATC)
-   - `nombre` (nombre del medicamento)
-   - `modo_arbol` (estructura jerárquica, si aplica)
-2. `meta`: información adicional obligatoria
-   - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-   - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+**Parámetros disponibles** (todos opcionales):
+- `practiv1`   (str): nombre del principio activo principal.  
+- `idpractiv1` (str): ID numérico del principio activo (solo dígitos).  
+- `dosis`      (str): dosis del medicamento (según CIMA).  
+- `forma`      (str): forma farmacéutica.  
+- `atc`        (str): código ATC o descripción parcial.  
+- `nombre`     (str): nombre del medicamento.  
+- `modoArbol`  (int): si se incluye (cualquier valor), devuelve la respuesta en modo jerárquico.  
+- `pagina`     (int; ≥ 1): número de página de resultados.
 
-**Errores posibles**:
-- `400 Bad Request`: Parámetro inválido.
-- `404 Not Found`: No se encontraron equivalentes clínicos para los filtros dados.
+**Respuesta** (200 OK):  
+Objeto JSON con:
+1. `resultados`: lista de objetos VMP/VMPP, cada uno con:
+   - `vmp`  
+   - `vmpp`  
+   - `principio_activo`  
+   - `dosis`  
+   - `forma`  
+   - `atc`  
+   - `nombre`  
+   - `modo_arbol` (estructura jerárquica, si aplica)  
+2. `meta`:
+   - `datos_obtenidos`: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”  
+   - `descargo`: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
+
+**Códigos HTTP**:
+- **200 OK**: listado devuelto con éxito.  
+- **400 Bad Request**: parámetro inválido (tipo o formato incorrecto).  
+- **404 Not Found**: no se encontraron equivalentes clínicos.  
+- **502 Bad Gateway**: error en la API externa CIMA.  
+- **500 Internal Server Error**: error interno procesando la petición.
 """
 
 maestras_description = """
-Devuelve una lista de elementos de un catálogo específico (maestra) según los filtros.
+Devuelve un **listado paginado** de elementos de un catálogo maestro (maestra) según filtros opcionales.
 
-**Parámetros disponibles**:
-- `maestra` (int): ID de la maestra a consultar:
-  - 1: Principios activos
-  - 3: Formas farmacéuticas
-  - 4: Vías de administración
-  - 6: Laboratorios
-  - 7: Códigos ATC
-  - 11: Principios Activos (SNOMED)
-  - 13: Formas farmacéuticas simplificadas (SNOMED)
-  - 14: Vías de administración simplificadas (SNOMED)
-  - 15: Medicamentos
-  - 16: Medicamentos comercializados (SNOMED)
-- `nombre` (str): Nombre del elemento a recuperar.
-- `id` (str): ID del elemento a recuperar.
-- `codigo` (str): Código del elemento a recuperar.
-- `estupefaciente` (int): 1 = Devuelve sólo principios activos estupefacientes.
-- `psicotropo` (int): 1 = Devuelve sólo principios activos psicótropos.
-- `estuopsico` (int): 1 = Devuelve estupefacientes o psicótropos.
-- `enuso` (int): 0 = Devuelve tanto los PA asociados a medicamentos como los no asociados.
-- `pagina` (int): Número de página (si la API lo soporta).
+**Uso**:
+- Envía los filtros como parámetros de consulta.  
+- Si no se especifica ningún filtro, devuelve todos los elementos (paginados).  
+- `pagina` indica la página de resultados (entero ≥ 1; por defecto 1).
 
-**Respuesta**:
-Un objeto JSON que contiene:
-1. `resultados`: lista de elementos que cumplen los filtros. Cada elemento incluye campos según la maestra seleccionada:
-   - Para ATC: `id`, `codigo`, `descripcion`, `fecha_actualizacion`, etc.
-   - Para Principios Activos: `id`, `nombre`, `estupefaciente`, `psicotropo`, etc.
-   - Para Formas: `id`, `descripcion`, etc.
-   - Para Laboratorios: `id`, `nombre`, etc.
-2. `meta`: información adicional obligatoria
-   - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-   - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+**Parámetros disponibles** (todos opcionales salvo `maestra`):
+- `maestra` (int, requerido): ID de la maestra a consultar:
+  - 1: Principios activos  
+  - 3: Formas farmacéuticas  
+  - 4: Vías de administración  
+  - 6: Laboratorios  
+  - 7: Códigos ATC  
+  - 11: Principios Activos (SNOMED)  
+  - 13: Formas farmacéuticas simplificadas (SNOMED)  
+  - 14: Vías de administración simplificadas (SNOMED)  
+  - 15: Medicamentos  
+  - 16: Medicamentos comercializados (SNOMED)  
+- `nombre` (str): nombre parcial o exacto del elemento.  
+- `id` (str): ID del elemento (solo dígitos).  
+- `codigo` (str): código del elemento (ej. ATC).  
+- `estupefaciente`, `psicotropo`, `estuopsico`, `enuso` (int; 0 o 1): flags de filtrado.  
+- `pagina` (int; ≥ 1): página de resultados (por defecto 1).
 
-**Errores posibles**:
-- `400 Bad Request`: Parámetros inválidos o rango incorrecto.
-- `404 Not Found`: No se encontraron elementos para los filtros dados.
+**Respuesta** (200 OK):  
+JSON con:
+1. `resultados`: lista de objetos según la maestra seleccionada.  
+2. `meta`:
+   - `datos_obtenidos`: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”  
+   - `descargo`: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
+
+**Códigos HTTP**:
+- **200 OK**: listado devuelto con éxito.  
+- **400 Bad Request**: `maestra` ausente o parámetro inválido/rango incorrecto.  
+- **404 Not Found**: no hay elementos que cumplan los filtros.  
+- **502 Bad Gateway**: error en la API externa CIMA.  
+- **500 Internal Server Error**: error interno del servidor.
 """
 
 registro_cambios_description = """
-Devuelve el historial de altas, bajas y modificaciones para medicamentos desde la fecha indicada.
+Devuelve el historial de altas, bajas y modificaciones de medicamentos a partir de la fecha indicada y/o para un Nº de registro concreto.
 
-**Parámetros disponibles**:
-- `fecha` (str): Fecha a partir de la cual se desea consultar cambios, en formato "dd/mm/yyyy".
-- `nregistro` (str): Número de registro AEMPS. Para múltiples, repetir el parámetro.
-- `metodo` (str): "GET" o "POST"; método HTTP que se usará en la llamada interna.
+**Uso**:
+- Envía los filtros como parámetros de consulta en un GET.  
+- `fecha` (opcional): fecha mínima de consulta en formato `dd/mm/yyyy`.  
+- `nregistro` (opcional): Número de registro AEMPS (solo dígitos).  
+- `metodo` (requerido): método HTTP interno a usar en la llamada (`GET` o `POST`; por defecto `GET`).
 
-**Respuesta**:
-Un objeto JSON que contiene:
-1. `resultados`: lista de objetos con:
-   - `nregistro` (Número de registro AEMPS)
-   - `tipo_cambio` ("ALTA", "BAJA", "MODIFICACION")
-   - `fecha_cambio` (fecha en que ocurrió el cambio)
-   - `detalle` (descripción de la modificación)
-2. `meta`: información adicional obligatoria
-   - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-   - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+**Ejemplo**:
+GET /registro-cambios?fecha=01/01/2025&nregistro=12345&metodo=POST
 
-**Errores posibles**:
-- `400 Bad Request`: Formato de fecha incorrecto (debe ser dd/mm/yyyy) o `metodo` distinto de "GET"/"POST".
-- `404 Not Found`: No se encontraron cambios para los parámetros dados.
+**Respuesta** (200 OK):  
+Objeto JSON con:
+1. `resultados`: lista de cambios, cada uno con:
+   - `nregistro`
+   - `tipo_cambio` (“ALTA”, “BAJA” o “MODIFICACION”)
+   - `fecha_cambio` (dd/mm/yyyy)
+   - `detalle`
+2. `meta`:
+   - `datos_obtenidos`: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”
+   - `descargo`: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
+
+**Códigos HTTP**:
+- **200 OK**: petición procesada con éxito.  
+- **400 Bad Request**: formato de `fecha` inválido o `metodo` distinto de `GET`/`POST`.  
+- **404 Not Found**: no se encontraron cambios para los filtros indicados.  
+- **502 Bad Gateway**: error en la API externa CIMA.  
+- **500 Internal Server Error**: error interno procesando la petición.
 """
 
 problemas_suministro_description = """
-Permite consultar el estado de suministro de presentaciones farmacéuticas, ya sea de forma global
-(paginado de todos los problemas activos) o para uno o varios Códigos Nacionales (CN) específicos.
+Consulta el estado de suministro de presentaciones farmacéuticas, bien de forma global (todos los problemas activos) o para uno o varios Códigos Nacionales (CN) específicos.
 
-Parámetros disponibles:
-- cn (List[str], opcional): Lista de Códigos Nacionales. Repetir el parámetro para cada CN,
-  por ejemplo: ?cn=654321&cn=789012
+**Uso**:
+- Envía los filtros como parámetros de consulta:  
+  - `cn` (List[str], opcional): uno o varios Códigos Nacionales (solo dígitos). Repite `cn` para cada valor: `?cn=123&cn=456`.
+- Si no se indica `cn`, devuelve el listado global de problemas activos.
+- Si se indican uno o varios `cn`, realiza consultas paralelas y agrupa la respuesta por CN.
 
-Comportamiento:
-- Si cn no se especifica (valor None), el endpoint devuelve el listado global de problemas de suministro activos,
-  tal como ofrece la API CIMA en /psuministro?pagina={num}&pagesize={num}. Retorna un objeto JSON con campos:
-  totalFilas (int): Total de registros
-  pagina (int): Página actual
-  tamanioPagina (int): Tamaño de página
-  resultados (List[Object]): Lista de problemas donde cada objeto incluye:
-    cn (str): Código Nacional
-    nombre (str): Nombre del medicamento
-    tipoProblemaSuministro (int): Tipo de problema (véase tabla meta en meta)
-    fini (int, opcional): Fecha de inicio (timestamp en milisegundos)
-    ffin (int, opcional): Fecha de fin (timestamp en milisegundos)
-    activo (bool): Indica si el problema está activo
-    observ (str, opcional): Observaciones
+**Respuesta** (200 OK):
+- Objeto JSON con:
+  - `data`:
+    - **Global** (sin `cn`): objeto con:
+      - `totalFilas` (int)  
+      - `pagina` (int)  
+      - `tamanioPagina` (int)  
+      - `resultados` (List[Object]) – cada problema incluye:
+        - `cn` (str)  
+        - `nombre` (str)  
+        - `tipoProblemaSuministro` (int)  
+        - `fini` (int, opcional)  
+        - `ffin` (int, opcional)  
+        - `activo` (bool)  
+        - `observ` (str, opcional)
+    - **Por CN** (con `cn`): objeto cuyos keys son los CN consultados y values los detalles de ese CN (mismo formato que un elemento de `resultados`).
+  - `metadata`:
+    - `datos_obtenidos`: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”  
+    - `descargo`: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”  
+    - `tipo_problema_suministros`: diccionario de códigos a descripciones de tipos de problema.
 
-- Si se proporciona uno o varios valores en cn, se realizan llamadas en paralelo a psuministro(cn)
-  para cada código, devolviendo un diccionario con la forma { "654321": {...}, "789012": {...} }
-  donde cada valor es el objeto JSON con los detalles del problema de suministro para ese CN.
+- Si hay errores parciales (al consultar ciertos CN), se añade:
+  - `errors`: objeto con cada CN fallido y su detalle de error.
 
-En ambos casos, se añade en la capa MCP una sección meta con:
-{
-  "datos_obtenidos": "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.",
-  "descargo": "Esta información no constituye consejo médico; se proporciona solo a efectos informativos.",
-  "tipo_problema_suministros": Diccionario con ids y tipo de problema de suministro para comparar con la respuesta de la consulta.
-}
-
-Errores posibles:
-- 502 Bad Gateway: Error upstream al consultar la API CIMA.
-- 500 Internal Server Error: Error interno en el servidor al procesar la solicitud.
+**Códigos HTTP**:
+- **200 OK**: petición procesada (total o parcialmente).  
+- **404 Not Found**: no se encontraron problemas de suministro para los filtros dados.  
+- **502 Bad Gateway**: error upstream consultando la API CIMA.  
+- **500 Internal Server Error**: error interno al procesar la petición.
 """
 
 doc_secciones_description = """
-Lista los metadatos (sección, título y orden) de las secciones existentes para el tipo de documento y medicamento indicado.
-Se requiere al menos `nregistro` o `cn`.
+Lista los metadatos de secciones disponibles para un tipo de documento y medicamento indicados.
 
-**Parámetros disponibles**:
-- `tipo_doc` (int): Tipo de documento:
-  - 1 = Ficha Técnica
-  - 2 = Prospecto
-  - 3-4 = Otros
-- `nregistro` (str): Número de registro del medicamento.
-- `cn` (str): Código Nacional del medicamento.
+**Uso**:
+- Envía los filtros como parámetros de consulta en un GET.  
+- Se requiere al menos uno de `nregistro` o `cn`.
 
-**Respuesta**:
-Un objeto JSON con:
-1. `resultados`: lista de objetos con metadatos de sección:
-   - `seccion` (ID de sección, p.ej. "4.1")
-   - `titulo` (título de la sección)
-   - `orden` (orden secuencial)
-2. `meta`: información obligatoria:
-   - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-   - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+**Parámetros**:
+- `tipo_doc` (int, path; 1–4, requerido):  
+  - 1 = Ficha Técnica  
+  - 2 = Prospecto  
+  - 3–4 = Otros  
+- `nregistro` (str, query, opcional): Número de registro AEMPS (solo dígitos).  
+- `cn` (str, query, opcional): Código Nacional (solo dígitos).
 
-**Errores posibles**:
-- `400 Bad Request`: No se proporcionó `nregistro` o `cn`, o `tipo_doc` fuera de rango (1-4).
-- `404 Not Found`: No se encontraron metadatos para los parámetros dados.
+**Ejemplo**:  
+GET /doc-secciones/1?nregistro=12345
+
+css
+Copiar
+Editar
+
+**Respuesta** (200 OK):  
+{
+  "resultados": [
+    { "seccion": "4.1", "titulo": "...", "orden": 1 },
+    { "seccion": "4.2", "titulo": "...", "orden": 2 },
+    …
+  ],
+  "meta": {
+    "datos_obtenidos": "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.",
+    "descargo": "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+  }
+}
+Códigos HTTP:
+  200 OK: metadatos devueltos con éxito.
+  400 Bad Request: faltan nregistro y cn, o tipo_doc fuera de rango (1–4).
+  404 Not Found: no se encontraron secciones para los filtros indicados.
+  502 Bad Gateway: error en la API externa CIMA.
+  500 Internal Server Error: error interno procesando la petición.
 """
 
 doc_contenido_description = """
-Devuelve el contenido (en HTML o JSON) de las secciones de un documento para el tipo y medicamento indicados.
-Si se especifica `seccion`, retorna solo esa sección.
+Devuelve el contenido de secciones de un documento (Ficha Técnica, Prospecto u otros).
 
-**Parámetros disponibles**:
-- `tipo_doc` (int): Tipo de documento:
-  - 1 = Ficha Técnica
-  - 2 = Prospecto
-  - 3-4 = Otros
-- `nregistro` (str): Número de registro del medicamento.
-- `cn` (str): Código Nacional del medicamento.
-- `seccion` (str): ID de la sección a obtener, p.ej. "4.2". Si no se indica, se devuelven todas.
+Uso:
+  Envía los filtros como parámetros de consulta en un GET.
+  Se requiere al menos uno de nregistro o cn.
+  Si no se indica seccion, devuelve todas las secciones.
 
-**Respuesta**:
-Dependerá del encabezado "Accept":
-- `application/json`: JSON con campos:
-  - `seccion` (ID de sección)
-  - `titulo` (título)
-  - `contenido` (HTML o texto según formato)
-  - `fecha_actualizacion` (fecha de obtención)
-- `text/html`: Solo el HTML de la sección (sin cabeceras ni menú lateral).
-- `text/plain`: Solo el texto plano de la sección.
+Parámetros:
+  tipo_doc (int, path; 1–4, requerido):
+    1 = Ficha Técnica
+    2 = Prospecto
+    3–4 = Otros
+  nregistro (str, query, opcional): Número de registro AEMPS (solo dígitos).
+  cn (str, query, opcional): Código Nacional (solo dígitos).
+  seccion (str, query, opcional): ID de sección (p.ej. “4.2”).
 
-**Errores posibles**:
-- `400 Bad Request`: No se proporcionó `nregistro` ni `cn`, o `tipo_doc` fuera de rango (1-4).
-- `404 Not Found`: No se encontró contenido para los parámetros dados.
+Ejemplo:
+GET /doc-contenido/2?cn=654321&seccion=5.1
+Accept: application/json
+Respuesta (200 OK):
+
+Si Accept: application/json:
+{
+  "seccion": "5.1",
+  "titulo": "...",
+  "contenido": "<p>…</p>",
+  "fecha_actualizacion": "DD/MM/AAAA",
+  "meta": {
+    "datos_obtenidos": "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.",
+    "descargo": "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+  }
+}
+Si Accept: devuelve solo el HTML de la sección.
+Si Accept: devuelve solo el texto plano de la sección.
+
+Códigos HTTP:
+  200 OK: contenido devuelto con éxito.
+  400 Bad Request: faltan nregistro y cn, o tipo_doc fuera de rango (1–4).
+  404 Not Found: no se encontró contenido para los parámetros indicados.
+  502 Bad Gateway: error en la API externa CIMA.
+  500 Internal Server Error: error interno procesando la petición.
 """
 
 listar_notas_description = """
-Devuelve las notas de seguridad asociadas a uno o varios medicamentos identificados por su número de registro.
+Devuelve las notas de seguridad asociadas a uno o varios medicamentos, identificados por su número de registro AEMPS.
 
-**Parámetro disponible**:
-- `nregistro` (List[str]): Uno o varios números de registro AEMPS. Repetir el parámetro para cada valor, por ejemplo: `?nregistro=AAA&nregistro=BBB`.
+**Uso**:  
+- Envía uno o varios `nregistro` como parámetro de consulta:  
+  - Para un solo registro: `GET /notas?nregistro=AAA`  
+  - Para varios: `GET /notas?nregistro=AAA&nregistro=BBB`
 
-**Comportamiento**:
-- Si solo se proporciona un `nregistro`, devuelve la lista de notas de seguridad para ese registro.
-- Si se proporcionan varios `nregistro`, se generan llamadas en paralelo y se devuelve un objeto JSON con la forma `{ "AAA": [...], "BBB": [...] }`.
+**Parámetro**:  
+- `nregistro` (List[str], requerido): uno o varios números de registro (solo dígitos o alfanumérico según CIMA). Repite el parámetro para cada valor.
 
-**Respuesta**:
-- Para un solo registro: lista de objetos con campos como:
-  - `nregistro` (Número de registro)
-  - `fecha` (fecha de la nota)
-  - `titulo` (título de la nota)
-  - `detalle` (descripción detallada)
-- Para varios registros: diccionario con claves por `nregistro` y valores las listas de notas correspondientes.
-  En ambos casos, se incluye `meta` con:
-  - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-  - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+**Comportamiento**:  
+- Si solo hay un `nregistro`, devuelve la lista de notas de seguridad de ese registro.  
+- Si hay varios, realiza las llamadas en paralelo y agrupa la respuesta en un objeto:
+  {
+    "AAA": [ …lista de notas… ],
+    "BBB": [ …lista de notas… ]
+  }
+Respuesta (200 OK):
+Objeto JSON con:
+resultados (para un solo registro) o el diccionario por registro (varios).
+meta:
+datos_obtenidos: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”
+descargo: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
 
-**Errores posibles**:
-- `400 Bad Request`: No se proporcionó al menos un `nregistro`.
-- `502 Bad Gateway`: Error upstream al listar notas.
-- `500 Internal Server Error`: Error interno al procesar notas.
+Códigos HTTP:
+200 OK: notas encontradas (total o parcialmente).
+400 Bad Request: no se proporcionó al menos un nregistro.
+404 Not Found: no se encontraron notas para los registros indicados.
+502 Bad Gateway: error upstream al consultar la API CIMA.
+500 Internal Server Error: error interno procesando la petición.
 """
 
 obtener_notas_description = """
-Devuelve las notas de seguridad para un único medicamento, identificado por su número de registro.
+Devuelve las notas de seguridad para un único medicamento, identificado por su número de registro AEMPS.
 
-**Parámetro**:
-- `nregistro` (str): Número de registro AEMPS.
+Uso:
+GET /notas/{nregistro}
 
-**Respuesta**:
-Lista de objetos con campos:
-- `nregistro` (Número de registro)
-- `fecha` (fecha de la nota)
-- `titulo` (título de la nota)
-- `detalle` (descripción detallada)
+Parámetro:
+nregistro (str, path; requerido): número de registro AEMPS (solo dígitos o alfanumérico según CIMA).
 
-Se incluye `meta` con:
-- `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-- `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+Respuesta (200 OK):
+  Lista de objetos con campos:
+    nregistro (str)
+    fecha (dd/mm/yyyy)
+    titulo (str)
+    detalle (str)
+    Meta:
+    datos_obtenidos: “Datos CIMA (AEMPS) extraídos el DD/MM/AAAA.”
+    descargo: “Esta información no constituye consejo médico; se proporciona solo a efectos informativos.”
 
-**Errores posibles**:
-- `404 Not Found`: No se encontraron notas para el registro dado.
+Códigos HTTP:
+  200 OK: notas encontradas con éxito.
+  404 Not Found: no se encontraron notas para el registro indicado.
+  502 Bad Gateway: error upstream al consultar la API CIMA.
+  500 Internal Server Error: error interno procesando la petición.
 """
 
 listar_materiales_description = """
-Devuelve los materiales informativos asociados a uno o varios medicamentos identificados por su número de registro.
+Devuelve los materiales informativos asociados a uno o varios medicamentos, identificados por su número de registro AEMPS.
 
-**Parámetro disponible**:
-- `nregistro` (List[str]): Uno o varios números de registro AEMPS. Repetir el parámetro para cada valor.
+Uso:
+- Envía uno o varios `nregistro` como parámetros de consulta:
+  - Para un único registro: `GET /materiales?nregistro=AAA`
+  - Para varios registros:  `GET /materiales?nregistro=AAA&nregistro=BBB`
 
-**Comportamiento**:
-- Si solo se proporciona un `nregistro`, devuelve la lista de materiales informativos para ese registro.
-- Si se proporcionan varios `nregistro`, se generan llamadas en paralelo y se devuelve un objeto JSON con `{ "AAA": [...], "BBB": [...] }`.
+Parámetro:
+- `nregistro` (List[str], requerido): uno o varios números de registro (solo dígitos o alfanumérico según CIMA). Repite `nregistro` para cada valor.
 
-**Respuesta**:
-- Para un solo registro: lista de objetos con campos:
-  - `nregistro` (Número de registro)
-  - `tipo_material` (título o tipo de material)
-  - `url` (enlace al documento)
-- Para varios registros: diccionario con claves por `nregistro` y valores las listas de materiales correspondientes.
-  En ambos casos, se incluye `meta` con:
-  - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-  - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+Comportamiento:
+- Único registro: devuelve la lista de materiales informativos de ese registro.
+- Varios registros: realiza llamadas en paralelo y agrupa la respuesta en un objeto:
+  ```json
+  {
+    "AAA": [ /* lista de materiales */ ],
+    "BBB": [ /* lista de materiales */ ]
+  }
+  ```
 
-**Errores posibles**:
-- `400 Bad Request`: No se proporcionó al menos un `nregistro`.
-- `502 Bad Gateway`: Error upstream al listar materiales.
-- `500 Internal Server Error`: Error interno al procesar materiales.
+Respuesta (200 OK):
+- Objeto JSON que incluye:
+  - `resultados` (para un solo registro) o el diccionario por registro (varios).
+  - `meta`:
+    - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
+    - `descargo`:       "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+
+Códigos HTTP:
+- 200 OK: materiales encontrados (total o parcialmente).
+- 400 Bad Request: no se proporcionó al menos un `nregistro`.
+- 404 Not Found: no se encontraron materiales para los registros indicados.
+- 502 Bad Gateway: error upstream al consultar la API CIMA.
+- 500 Internal Server Error: error interno procesando la petición.
 """
 
 obtener_materiales_description = """
-Devuelve los materiales informativos asociados a un único medicamento, identificado por su número de registro.
+Devuelve los materiales informativos asociados a un único medicamento, identificado por su número de registro AEMPS.
 
-**Parámetro**:
-- `nregistro` (str): Número de registro AEMPS.
+Uso:
+```
+GET /materiales/{nregistro}
+```
 
-**Respuesta**:
-Lista de objetos con campos:
-- `nregistro` (Número de registro)
-- `tipo_material` (título o tipo de material)
-- `url` (enlace al documento)
+Parámetro:
+- `nregistro` (str, path; requerido): número de registro AEMPS (solo dígitos o alfanumérico según CIMA).
 
-Se incluye `meta` con:
-- `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-- `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+Respuesta (200 OK):
+- Lista de objetos con:
+  - `nregistro`      (str) — número de registro
+  - `tipo_material`  (str) — título o tipo de material
+  - `url`            (str) — enlace al documento
+- Meta:
+  - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
+  - `descargo`:       "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
 
-**Errores posibles**:
-- `404 Not Found`: No se encontraron materiales para el registro dado.
+Códigos HTTP:
+- 200 OK: materiales encontrados con éxito.
+- 404 Not Found: no se encontraron materiales para el registro indicado.
+- 502 Bad Gateway: error upstream al consultar la API CIMA.
+- 500 Internal Server Error: error interno procesando la petición.
 """
 
 html_ft_multiple_description = """
-Obtiene el HTML completo de la ficha técnica para uno o varios medicamentos.
+Descarga o devuelve el HTML completo de la ficha técnica para uno o varios medicamentos.
 
-**Parámetros disponibles**:
-- `nregistro` (List[str]): Uno o varios números de registro AEMPS. Repetir el parámetro para cada valor, por ejemplo: `?nregistro=AAA&nregistro=BBB`.
-- `filename` (str): Nombre de archivo HTML que se desea (p.ej. 'FichaTecnica.html').
+Uso:
+- Para varios registros: `GET /doc-html/ft?nregistro=AAA&nregistro=BBB&filename=FichaTecnica.html`  
+- Para uno solo: si solo se incluye un `nregistro`, se devuelve directamente el HTML.
 
-**Comportamiento**:
-- Si solo se proporciona un `nregistro`, devuelve un `StreamingResponse` con el contenido HTML directamente.
-- Si se proporcionan varios `nregistro`, descarga en paralelo el HTML de cada uno y devuelve un objeto JSON con la forma `{ "AAA": "<html>…</html>", "BBB": "<html>…</html>" }`.
+Parámetros:
+- `nregistro` (List[str], requerido): uno o varios números de registro AEMPS. Repite este parámetro por cada valor.  
+- `filename` (str, requerido): nombre de archivo HTML deseado (p.ej. "FichaTecnica.html").
 
-**Respuesta**:
-- Para un solo registro: `StreamingResponse` con `media_type="text/html"`.
-- Para múltiples registros: JSON con claves por `nregistro` y valores con el HTML en cadena.
-  Además, se incluye en el objeto `meta`:
-  - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-  - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+Comportamiento:
+- **Registro único** (`len(nregistro)==1`): devuelve un `StreamingResponse` con `media_type="text/html"` y el contenido HTML.
+- **Múltiples registros**: genera en paralelo el HTML de cada ficha y devuelve un archivo ZIP con las páginas, o bien un JSON si se gestiona así.
 
-**Errores posibles**:
-- `400 Bad Request`: No se proporcionó al menos un `nregistro` o `filename`.
-- `502 Bad Gateway`: Error upstream al descargar la ficha técnica.
-- `500 Internal Server Error`: Error interno al procesar la ficha técnica.
+Respuesta:
+- **Único registro**: `StreamingResponse` con el contenido HTML.
+- **Múltiples registros**: `StreamingResponse` con un ZIP (status 200).  
+
+Meta:
+- `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."  
+- `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+
+Códigos HTTP:
+- **200 OK**: HTML o ZIP generado correctamente.
+- **400 Bad Request**: falta `nregistro` o `filename`.
+- **404 Not Found**: no existe ficha técnica para algún registro (en múltiple, incluye errores parciales).
+- **502 Bad Gateway**: error upstream al descargar la ficha técnica.
+- **500 Internal Server Error**: error interno procesando la petición.
 """
 
 html_ft_description = """
-Obtiene el HTML completo de la ficha técnica para un único medicamento.
+Obtiene el HTML completo de la ficha técnica de un único medicamento.
 
-**Parámetros**:
-- `nregistro` (str): Número de registro AEMPS.
-- `filename` (str): Nombre de archivo HTML deseado ('FichaTecnica.html').
+Uso:
+```
+GET /doc-html/ft/{nregistro}/{filename}
+```
 
-**Respuesta**:
-`StreamingResponse` con el contenido HTML y `media_type="text/html"`.
+Parámetros:
+- `nregistro` (str, path; requerido): número de registro AEMPS.
+- `filename` (str, path; requerido): nombre de archivo HTML (p.ej. "FichaTecnica.html").
 
-**Errores posibles**:
-- `404 Not Found`: No existe la ficha técnica para el registro proporcionado.
-- `500 Internal Server Error`: Error interno al procesar la ficha técnica.
+Respuesta (200 OK):
+- `StreamingResponse` con `media_type="text/html"` y el contenido HTML.
+
+Meta:
+- `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."  
+- `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+
+Códigos HTTP:
+- **200 OK**: HTML generado correctamente.
+- **404 Not Found**: no existe la ficha técnica para el registro indicado.
+- **502 Bad Gateway**: error upstream al descargar la ficha técnica.
+- **500 Internal Server Error**: error interno procesando la petición.
 """
 
 html_p_multiple_description = """
-Obtiene el HTML completo del prospecto para uno o varios medicamentos.
+Descarga o devuelve el HTML completo del prospecto para uno o varios medicamentos.
 
-**Parámetros disponibles**:
-- `nregistro` (List[str]): Uno o varios números de registro AEMPS. Repetir el parámetro para cada valor.
-- `filename` (str): Nombre de archivo HTML que se desea (p.ej. 'Prospecto.html' o sección específica).
+Uso:
+- Para varios registros: `GET /doc-html/p?nregistro=AAA&nregistro=BBB&filename=Prospecto.html`  
+- Para uno solo: si solo se incluye un `nregistro`, se devuelve directamente el HTML.
 
-**Comportamiento**:
-- Si solo se proporciona un `nregistro`, devuelve un `StreamingResponse` con el contenido HTML.
-- Si se proporcionan varios `nregistro`, descarga en paralelo el HTML de cada uno y devuelve un objeto JSON con `{ "NR1": "<html>…</html>", "NR2": "<html>…</html>" }`.
+Parámetros:
+- `nregistro` (List[str], requerido): uno o varios números de registro AEMPS. Repite este parámetro por cada valor.  
+- `filename` (str, requerido): nombre de archivo HTML deseado (p.ej. "Prospecto.html" o sección específica).
 
-**Respuesta**:
-- Para un solo registro: `StreamingResponse` con `media_type="text/html"`.
-- Para múltiples registros: JSON con claves por `nregistro` y valores con el HTML en cadena.
-  Se incluye `meta` con:
-  - `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."
-  - `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+Comportamiento:
+- **Registro único** (`len(nregistro)==1`): devuelve un `StreamingResponse` con `media_type="text/html"` y el contenido HTML.
+- **Múltiples registros**: genera en paralelo el HTML de cada prospecto y devuelve un archivo ZIP con las páginas (status 200).
 
-**Errores posibles**:
-- `400 Bad Request`: Falta `nregistro` o `filename`.
-- `502 Bad Gateway`: Error upstream al descargar el prospecto.
-- `500 Internal Server Error`: Error interno al procesar el prospecto.
+Respuesta:
+- **Único registro**: `StreamingResponse` con el contenido HTML.
+- **Múltiples registros**: `StreamingResponse` con un ZIP de HTML.
+
+Meta:
+- `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."  
+- `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+
+Códigos HTTP:
+- **200 OK**: HTML o ZIP generado correctamente.
+- **400 Bad Request**: falta `nregistro` o `filename`.
+- **404 Not Found**: no existe prospecto para algún registro (en múltiple, incluye errores parciales).
+- **502 Bad Gateway**: error upstream al descargar el prospecto.
+- **500 Internal Server Error**: error interno procesando la petición.
 """
 
 html_p_description = """
 Obtiene el HTML completo del prospecto para un único medicamento.
 
-**Parámetros**:
-- `nregistro` (str): Número de registro AEMPS.
-- `filename` (str): Nombre de archivo HTML deseado ('Prospecto.html' o sección específica).
+Uso:
+```
+GET /doc-html/p/{nregistro}/{filename}
+```
 
-**Respuesta**:
-`StreamingResponse` con `media_type="text/html"`.
+Parámetros:
+- `nregistro` (str, path; requerido): número de registro AEMPS.
+- `filename` (str, path; requerido): nombre de archivo HTML (p.ej. "Prospecto.html" o sección específica).
 
-**Errores posibles**:
-- `404 Not Found`: No existe el prospecto para el registro dado.
-- `500 Internal Server Error`: Error interno al procesar el prospecto.
+Respuesta (200 OK):
+- `StreamingResponse` con `media_type="text/html"` y el contenido HTML.
+
+Meta:
+- `datos_obtenidos`: "Datos CIMA (AEMPS) extraídos el DD/MM/AAAA."  
+- `descargo`: "Esta información no constituye consejo médico; se proporciona solo a efectos informativos."
+
+Códigos HTTP:
+- **200 OK**: HTML generado correctamente.
+- **404 Not Found**: no existe el prospecto para el registro indicado.
+- **502 Bad Gateway**: error upstream al descargar el prospecto.
+- **500 Internal Server Error**: error interno procesando la petición.
 """
 
-descargar_ipt = """
-Descarga los archivos IPT (Informe de Posicionamiento Terapéutico) asociados a uno o más medicamentos,
-identificados por su Código Nacional (`cn`) y/o Número de Registro (`nregistro`).
+descargar_ipt_description = """
+Descarga los archivos IPT (Informe de Posicionamiento Terapéutico) para uno o varios medicamentos.
 
-**Parámetros disponibles**:
-- `cn` (List[str], opcional): Lista de Códigos Nacionales. Repetir el parámetro para cada CN, por ejemplo: `?cn=123&cn=456`.
-- `nregistro` (List[str], opcional): Lista de Números de Registro AEMPS. Repetir el parámetro para cada valor.
+Uso:
+- Envía los filtros como parámetros de consulta en un GET:  
+  - `cn` (List[str], opcional): uno o varios Códigos Nacionales. Repite `cn` por cada valor: `?cn=123&cn=456`.  
+  - `nregistro` (List[str], opcional): uno o varios Números de Registro AEMPS. Repite `nregistro` por valor.  
+  - `zip` (bool, opcional): `true` para recibir un ZIP con todos los IPT; por defecto JSON de URLs.
 
-**Comportamiento**:
-- Es obligatorio proporcionar al menos un `cn` o un `nregistro`.
-- Si se especifica un solo valor, retorna una lista de rutas de archivos IPT para ese único medicamento.
-- Si se especifican varios valores, descarga en paralelo todos los documentos IPT y concatena las rutas en una única lista.
+Parámetros obligatorios:
+- Al menos uno de `cn` o `nregistro`.
 
-**Respuesta**:
-Lista de cadenas (`List[str]`), donde cada elemento es la ruta en servidor al archivo IPT descargado.
+Comportamiento:
+- **Sin `zip`** (por defecto): devuelve JSON con:
+  ```json
+  {
+    "urls": ["https://.../data/ipt1.pdf", ...],
+    "errors": { "cn=999": { "detail": "..." } }  // si hubo errores parciales
+  }
+  ```
+- **Con `zip=true`**: devuelve un `StreamingResponse` con `media_type="application/x-zip-compressed"` y ZIP descargable.
 
-**Errores posibles**:
-- `400 Bad Request`: No se proporcionó ni `cn` ni `nregistro`.
-- `502 Bad Gateway`: Error upstream al intentar descargar alguno de los IPT.
-- `500 Internal Server Error`: Error interno al procesar la solicitud.
+Respuesta (200 OK):
+- JSON de URLs o ZIP.
+
+Códigos HTTP:
+- **200 OK**: IPTs generados correctamente.
+- **400 Bad Request**: faltan `cn` y `nregistro` o parámetros inválidos.
+- **404 Not Found**: no se descargó ningún IPT (todos fallaron).
+- **502 Bad Gateway**: error upstream al descargar algún IPT.
+- **500 Internal Server Error**: error interno procesando la solicitud.
 """
 
-identificar_medicamento = """
-Busca hasta 10 presentaciones de medicamentos en el archivo `Presentaciones.xls` según:
-- `nregistro`: coincidencia exacta del número de registro.
-- `cn`: coincidencia exacta del Código Nacional.
-- `nombre`: coincidencia parcial o búsqueda difusa en el nombre de la presentación.
+identificar_medicamento_description = """
+Identifica hasta 10 presentaciones de medicamentos en el fichero `Presentaciones.xls` usando filtros y paginación.
 
-**Parámetros (al menos uno es obligatorio)**:
-- `nregistro` (str, opcional): Número de registro AEMPS.
-- `cn` (str, opcional): Código Nacional del medicamento.
-- `nombre` (str, opcional): Nombre (o parte) de la presentación. Si no hay coincidencias exactas,
-  se realiza una búsqueda difusa para devolver hasta 10 opciones similares.
+Uso:
+- Envía los filtros como parámetros de consulta en un GET:  
+  - `nregistro` (str): coincidencia exacta del Nº Registro AEMPS.  
+  - `cn`        (str): coincidencia exacta del Código Nacional.  
+  - `nombre`    (str): coincidencia parcial o difusa en el nombre de la presentación.  
+  - `laboratorio`   (str): coincidencia parcial en el laboratorio fabricante.  
+  - `atc`            (str): coincidencia parcial en el código ATC.  
+  - `estado`         (str): coincidencia parcial en el estado.  
+  - `comercializado` (bool): `true`/`false` para filtrar por comercializado.  
+  - `pagina`    (int, ≥1; opcional): página de resultados (por defecto 1).  
+  - `page_size` (int, 1–100; opcional): tamaño de página (por defecto 10).
 
-**Comportamiento**:
-- Si se proporciona `nregistro`, filtra las filas cuyo campo "Nº Registro" coincide exactamente.
-- Si se proporciona `cn`, filtra por "Cod. Nacional".
-- Si se proporciona `nombre`, normaliza texto (quita tildes y mayúsculas), y busca coincidencias parciales.
-  Si no se encuentra ninguna, aplica algoritmo de similitud (difflib.get_close_matches) para
-  devolver hasta 10 resultados.
+Parámetros obligatorios:
+- Al menos uno de `nregistro`, `cn` o `nombre`.
 
-**Respuesta**:
-Lista de diccionarios (como máximo 10), donde cada diccionario contiene los campos originales
-de la hoja de Excel (por ejemplo, "Nº Registro", "Cod. Nacional", "Presentación", etc.).
-Si no se encuentra ninguna coincidencia, retorna lista vacía.
+Comportamiento:
+- Aplica los filtros exactos o parciales en el DataFrame cargado.  
+- Para `nombre`, si no hay coincidencias directas, usa búsqueda difusa (`difflib.get_close_matches`) hasta 10 resultados.  
+- Paginación sobre el conjunto filtrado.
 
-**Errores posibles**:
-- `400 Bad Request`: No se especificó `nregistro`, `cn` ni `nombre`.
+Respuesta** (200 OK):
+```json
+{
+  "data": [ /* lista de hasta page_size registros */ ],
+  "metadata": {
+    /* parámetros de consulta y total de resultados */
+    "datos_obtenidos": "Datos extraídos de Presentaciones.xls el DD/MM/AAAA.",
+    "descargo": "Esta información no constituye consejo médico; solo informativa."
+  }
+}
+```
+
+Códigos HTTP:
+- **200 OK**: búsqueda y paginación correctas.  
+- **400 Bad Request**: no se especificó al menos uno de `nregistro`, `cn` o `nombre`, o parámetros fuera de rango.  
+"""
+
+nomenclator_description = """
+Realiza búsquedas avanzadas en el Nomenclátor de facturación de productos farmacéuticos.
+
+Uso:
+- Envía los filtros como parámetros de consulta en un GET.
+- Si no se especifica ningún filtro, devuelve todos los registros (paginados).
+- `pagina` indica la página de resultados (entero ≥1; por defecto 1).
+- `page_size` indica el número de resultados por página (1–100; por defecto 10).
+
+Parámetros disponibles (todos opcionales salvo que se requiera al menos uno según contexto):
+- `codigo_nacional`      (str): coincidencia exacta del Código Nacional.
+- `nombre_producto`      (str): coincidencia parcial (case-insensitive) en el nombre del producto.
+- `tipo_farmaco`         (str): coincidencia parcial en el tipo de fármaco.
+- `principio_activo`     (str): coincidencia parcial en el principio activo o asociación.
+- `codigo_laboratorio`   (str): coincidencia exacta del código de laboratorio ofertante.
+- `nombre_laboratorio`   (str): coincidencia parcial en el nombre del laboratorio.
+- `estado`               (str): coincidencia parcial en el estado (p.ej. "ALTA", "BAJA").
+- `fecha_alta_desde`     (str): fecha de alta ≥dd/mm/yyyy.
+- `fecha_alta_hasta`     (str): fecha de alta ≤dd/mm/yyyy.
+- `fecha_baja_desde`     (str): fecha de baja ≥dd/mm/yyyy.
+- `fecha_baja_hasta`     (str): fecha de baja ≤dd/mm/yyyy.
+- `aportacion_beneficiario` (str): coincidencia parcial en la aportación del beneficiario.
+- `precio_min_iva`       (float): precio venta público mínimo con IVA.
+- `precio_max_iva`       (float): precio venta público máximo con IVA.
+- `agrupacion_codigo`    (str): coincidencia exacta del código de agrupación homogénea.
+- `agrupacion_nombre`    (str): coincidencia parcial en el nombre de agrupación homogénea.
+- `diagnostico_hospitalario` (bool): true para sólo diagnóstico hospitalario.
+- `larga_duracion`       (bool): true para tratamiento de larga duración.
+- `especial_control`     (bool): true para especial control médico.
+- `medicamento_huerfano` (bool): true para medicamento huérfano.
+- `pagina`               (int): página de resultados (≥1).
+- `page_size`            (int): resultados por página (1–100).
+
+Respuesta (200 OK):
+- JSON con:
+  - `data`: lista de objetos, cada uno con todas las columnas del Nomenclátor correspondientes al filtro.
+  - `metadata`:
+    - campos de consulta y `total` de registros encontrados.
+    - `datos_obtenidos`: "Datos extraídos de Nomenclátor el DD/MM/AAAA."
+    - `descargo`: "Información meramente informativa; no sustituye consejo médico."
+
+Códigos HTTP:
+- **200 OK**: búsqueda completada (total o parcialmente).
+- **400 Bad Request**: formato de fecha inválido o rango de valores fuera de límite.
+- **404 Not Found**: no se encontraron registros según los filtros.
+- **500 Internal Server Error**: error interno procesando la petición.
 """
 
 system_info_prompt_description = """

@@ -1,18 +1,20 @@
-# startup.py
+# app/startup.py
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from pathlib import Path
 import logging
 import pandas as pd
+import asyncio
 
+from starlette.concurrency import run_in_threadpool
 from redis.asyncio import Redis
 from fastapi_cache.backends.redis import RedisBackend
 from fastapi_cache import FastAPICache
 from fastapi_limiter import FastAPILimiter
+from fastapi_cache.backends.inmemory import InMemoryBackend
 
 from app.docs_utils import download_presentaciones, download_nomenclator_csv
 from app.config import settings
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -20,58 +22,55 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Iniciando lifespan de la aplicación")
 
-    # 1) Descargar Presentaciones
-    try:
-        download_presentaciones()
-        logger.info("Descargar Presentaciones.xls: OK")
-    except Exception as exc:
-        logger.error(f"Error al descargar Presentaciones.xls: {exc}", exc_info=True)
-        raise RuntimeError(f"Error al descargar Presentaciones.xls: {exc}")
+    data_dir = Path(settings.data_dir) / "documentacion"
+    xls_path = data_dir / "Presentaciones.xls"
+    csv_dir = data_dir
 
-    # 2) Descargar Nomenclátor CSV (y capturar ruta real)
+    # Descargar Presentaciones y CSV de Nomenclátor concurrentemente
     try:
-        nomenclator_path = download_nomenclator_csv(
-            dest_dir=os.path.join(settings.data_dir, "documentacion")
+        downloaded_xls, downloaded_csv = await asyncio.gather(
+            download_presentaciones(xls_path, timeout=60), # settings.timeout
+            download_nomenclator_csv(csv_dir, timeout=60), # settings.timeout
         )
-        logger.info(f"Descargar nomenclátor: OK → {nomenclator_path}")
-    except Exception as exc:
-        logger.error(f"Error al descargar nomenclátor: {exc}", exc_info=True)
-        raise RuntimeError(f"Error al descargar nomenclátor: {exc}")
-
-    # 3) Validar que el fichero Excel existe
-    xls_file = Path(settings.data_dir) / "documentacion" / "Presentaciones.xls"
-    if not xls_file.exists():
-        logger.error(f"No se encontró Presentaciones.xls en: {xls_file}")
-        raise RuntimeError(f"No se encontró Presentaciones.xls en: {xls_file}")
-
-    # 4) Cargar DataFrames en el estado de la app
-    try:
-        df_presentaciones = pd.read_excel(xls_file)
-        df_nomenclator   = pd.read_csv(nomenclator_path)
-        app.state.df_presentaciones = df_presentaciones
-        app.state.df_nomenclator   = df_nomenclator
         logger.info(
-            f"DataFrames cargados: "
-            f"{len(df_presentaciones)} filas en Presentaciones.xls, "
-            f"{len(df_nomenclator)} filas en {os.path.basename(nomenclator_path)}"
+            f"Descargas completadas: {downloaded_xls} ({downloaded_xls.stat().st_size} bytes), "
+            f"{downloaded_csv} ({downloaded_csv.stat().st_size} bytes)"
+        )
+    except Exception as exc:
+        logger.error(f"Error en descargas iniciales: {exc}", exc_info=True)
+        raise RuntimeError(f"Error en descargas: {exc}")
+
+    # Cargar DataFrames en hilos separados para no bloquear el event loop
+    try:
+        df_presentaciones, df_nomenclator = await asyncio.gather(
+            run_in_threadpool(pd.read_excel, downloaded_xls),
+            run_in_threadpool(pd.read_csv, downloaded_csv),
+        )
+        app.state.df_presentaciones = df_presentaciones
+        app.state.df_nomenclator = df_nomenclator
+        logger.info(
+            f"DataFrames cargados: {len(df_presentaciones)} filas en Presentaciones.xls, "
+            f"{len(df_nomenclator)} filas en nomenclátor.csv"
         )
     except Exception as exc:
         logger.error(f"Error al leer ficheros: {exc}", exc_info=True)
         raise RuntimeError(f"Error al leer ficheros: {exc}")
 
-    # 5) Inicialización de Redis, cache y rate limiter
-    try:
-        redis = Redis.from_url(
-            settings.redis_url,
-            encoding="utf-8",
-            decode_responses=True
-        )
-        FastAPICache.init(RedisBackend(redis), prefix=settings.cache_prefix)
-        await FastAPILimiter.init(redis)
-        logger.info("Redis conectado y cache + rate limiter inicializados")
-    except Exception as exc:
-        logger.error(f"Error al conectar a Redis: {exc}", exc_info=True)
-        raise RuntimeError(f"Error al conectar a Redis: {exc}")
+    # Inicialización de Redis o caché en memoria
+    if settings.redis_url:
+        try:
+            redis = Redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+            FastAPICache.init(RedisBackend(redis), prefix=settings.cache_prefix)
+            await FastAPILimiter.init(redis)
+            logger.info("Redis conectado: cache y rate limiter inicializados")
+        except Exception as exc:
+            logger.warning(
+                f"No se pudo inicializar Redis: {exc}. Usando caché en memoria y sin limitador."
+            )
+            FastAPICache.init(InMemoryBackend(), prefix="inmemory")
+    else:
+        logger.info("settings.redis_url vacío: usando caché en memoria sin limitador")
+        FastAPICache.init(InMemoryBackend(), prefix="inmemory")
 
     yield
 
