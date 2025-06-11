@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import json
 import pandas as pd
-import unicodedata
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer
 from fastapi.responses import JSONResponse, StreamingResponse
 import zipfile
+from io import BytesIO
 import io
 from aiohttp.client_exceptions import ClientResponseError
 # Cache
@@ -46,7 +46,10 @@ import app.cima_client as cima
 import app.mcp_constants as constant
 from app.config import settings
 from app.startup import lifespan
-from app.helpers import _build_metadata, API_CIMA_AEMPS_VERSION, API_PSUM_VERSION
+from app.helpers import (_build_metadata, safe_cima_call, _filter_exact,
+                         _paginate, _filter_bool, _filter_contains, _filter_date,
+                         _filter_numeric, format_response, _normalize,
+                         API_CIMA_AEMPS_VERSION, API_PSUM_VERSION)
 
 # ------------------------------------------------------------
 # 1) Configuración global de logging
@@ -71,16 +74,6 @@ app = FastAPI(
     router_dependencies=[Depends(RateLimiter(times=20, seconds=60))],
     swagger_ui_parameters={"defaultModelsExpandDepth": -1},
 )
-
-# ---------------------------------------------------------------------------
-#   Montar archivos estáticos
-# ---------------------------------------------------------------------------
-app.mount(
-    "/data",
-    StaticFiles(directory=str(settings.data_dir)),
-    name="data"
-)
-
 
 # ---------------------------------------------------------------------------
 #   CORS
@@ -191,13 +184,8 @@ async def obtener_medicamento(
         parametros = {"cn": cn_clean, "nregistro": nregistro_clean}
         metadatos = _build_metadata(parametros)
 
-        # Estructurar respuesta
-        if isinstance(resultado, dict):
-            respuesta = {**resultado, **metadatos}
-        else:
-            respuesta = {"data": resultado, **metadatos}
+        respuesta = format_response(resultado, metadatos)
 
-        logger.info(f"Medicamento encontrado exitosamente - CN: {cn_clean}")
         return respuesta
 
     except HTTPException:
@@ -370,10 +358,7 @@ async def buscar_medicamentos(
     }
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultados, dict):
-        respuesta = {**resultados, **metadatos}
-    else:
-        respuesta = {"data": resultados, **metadatos}
+    respuesta = format_response(resultados, metadatos)
 
     return respuesta
 
@@ -423,10 +408,7 @@ async def buscar_en_ficha_tecnica(
     parametros = {"reglas": reglas}
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultados, dict):
-        respuesta = {**resultados, **metadatos}
-    else:
-        respuesta = {"data": resultados, **metadatos}
+    respuesta = format_response(resultados, metadatos)
 
     return respuesta
 
@@ -508,11 +490,9 @@ async def listar_presentaciones(
     }
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultados, dict):
-        # Fusionamos el contenido original con los metadatos
-        return {**resultados, **metadatos}
-    else:
-        return {"data": resultados, **metadatos}
+    respuesta = format_response(resultados, metadatos)
+
+    return respuesta
 
 @app.get(
     "/presentacion",
@@ -592,43 +572,18 @@ async def obtener_presentacion(
     response_model=Dict[str, Any],
 )
 async def buscar_vmpp(
-    practiv1: Optional[str] = Query(
-        None,
-        description="Nombre del principio activo principal."
-    ),
-    idpractiv1: Optional[str] = Query(
-        None,
-        description="ID del principio activo principal."
-    ),
-    dosis: Optional[str] = Query(
-        None,
-        description="Dosis del medicamento."
-    ),
-    forma: Optional[str] = Query(
-        None,
-        description="Nombre de la forma farmacéutica."
-    ),
-    atc: Optional[str] = Query(
-        None,
-        description="Código ATC o descripción parcial."
-    ),
-    nombre: Optional[str] = Query(
-        None,
-        description="Nombre del medicamento."
-    ),
-    modoArbol: Optional[int] = Query(
-        None,
-        description="Si se indica, devuelve resultados en modo jerárquico."
-    ),
-    pagina: Optional[int] = Query(
-        1,
-        ge=1,
-        description="Número de página (si la API lo soporta)."
-    ),
+    practiv1: Optional[str] = Query(None, description="Nombre del principio activo principal."),
+    idpractiv1: Optional[str] = Query(None, description="ID del principio activo principal."),
+    dosis: Optional[str] = Query(None, description="Dosis del medicamento."),
+    forma: Optional[str] = Query(None, description="Nombre de la forma farmacéutica."),
+    atc: Optional[str] = Query(None, description="Código ATC o descripción parcial."),
+    nombre: Optional[str] = Query(None, description="Nombre del medicamento."),
+    modoArbol: Optional[int] = Query(None, description="Si se indica, devuelve resultados en modo jerárquico."),
+    pagina: Optional[int] = Query(1, ge=1, description="Número de página (si la API lo soporta)."),
 ) -> Dict[str, Any]:
-    resultados = await cima.vmpp(**locals())
+    resultados = await safe_cima_call(cima.vmpp, **locals())
 
-    parametros = {
+    parametros = {k: v for k, v in {
         "practiv1": practiv1,
         "idpractiv1": idpractiv1,
         "dosis": dosis,
@@ -637,13 +592,13 @@ async def buscar_vmpp(
         "nombre": nombre,
         "modoArbol": modoArbol,
         "pagina": pagina,
-    }
+    }.items() if v is not None}
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultados, dict):
-        return {**resultados, **metadatos}
-    else:
-        return {"data": resultados, **metadatos}
+    respuesta = format_response(resultados, metadatos)
+
+    return respuesta
+
 
 # ---------------------------------------------------------------------------
 # 6 · Maestras
@@ -653,59 +608,22 @@ async def buscar_vmpp(
     operation_id="consultar_maestras",
     summary="Consultar catálogos maestros: ATC, Principios Activos, Formas, Laboratorios...",
     description=constant.maestras_description,
-    response_model=Dict[str, Any],  # Mejor definir un modelo Pydantic específico si se desea
+    response_model=Dict[str, Any],
 )
 async def consultar_maestras(
-    maestra: Optional[int] = Query(
-        None,
-        description="ID de la maestra a consultar (1,3,4,6,7,11,13,14,15,16)."
-    ),
-    nombre: Optional[str] = Query(
-        None,
-        description="Nombre del elemento a recuperar."
-    ),
-    id: Optional[str] = Query(
-        None,
-        description="ID del elemento a recuperar."
-    ),
-    codigo: Optional[str] = Query(
-        None,
-        description="Código del elemento a recuperar."
-    ),
-    estupefaciente: Optional[int] = Query(
-        None,
-        ge=0,
-        le=1,
-        description="1 = Sólo principios activos estupefacientes."
-    ),
-    psicotropo: Optional[int] = Query(
-        None,
-        ge=0,
-        le=1,
-        description="1 = Sólo principios activos psicótropos."
-    ),
-    estuopsico: Optional[int] = Query(
-        None,
-        ge=0,
-        le=1,
-        description="1 = Principios activos estupefacientes o psicótropos."
-    ),
-    enuso: Optional[int] = Query(
-        None,
-        ge=0,
-        le=1,
-        description="0 = PA asociados o no asociados a medicamentos."
-    ),
-    pagina: Optional[int] = Query(
-        1,
-        ge=1,
-        description="Número de página (si la API lo soporta)."
-    ),
+    maestra: Optional[int] = Query(None, description="ID de la maestra a consultar."),
+    nombre: Optional[str] = Query(None, description="Nombre del elemento a recuperar."),
+    id: Optional[str] = Query(None, description="ID del elemento a recuperar."),
+    codigo: Optional[str] = Query(None, description="Código del elemento a recuperar."),
+    estupefaciente: Optional[int] = Query(None, ge=0, le=1, description="1 = Sólo PA estupefacientes."),
+    psicotropo: Optional[int] = Query(None, ge=0, le=1, description="1 = Sólo PA psicótropos."),
+    estuopsico: Optional[int] = Query(None, ge=0, le=1, description="PA estupefacientes o psicótropos."),
+    enuso: Optional[int] = Query(None, ge=0, le=1, description="0 = PA asociados o no a medicamentos."),
+    pagina: Optional[int] = Query(1, ge=1, description="Número de página (si la API lo soporta)."),
 ) -> Dict[str, Any]:
-    resultados = await cima.maestras(**locals())
+    resultados = await safe_cima_call(cima.maestras, **locals())
 
-    # Construir metadatos usando la función auxiliar
-    parametros = {
+    parametros = {k: v for k, v in {
         "maestra": maestra,
         "nombre": nombre,
         "id": id,
@@ -715,13 +633,12 @@ async def consultar_maestras(
         "estuopsico": estuopsico,
         "enuso": enuso,
         "pagina": pagina,
-    }
+    }.items() if v is not None}
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultados, dict):
-        return {**resultados, **metadatos}
-    else:
-        return {"data": resultados, **metadatos}
+    respuesta = format_response(resultados, metadatos)
+
+    return respuesta
 
 
 # ---------------------------------------------------------------------------
@@ -732,37 +649,30 @@ async def consultar_maestras(
     operation_id="registro_cambios",
     summary="Historial de altas, bajas y modificaciones de medicamentos",
     description=constant.registro_cambios_description,
-    response_model=Dict[str, Any],  # Mejor definir un modelo Pydantic específico si se desea
+    response_model=Dict[str, Any],
 )
 async def registro_cambios(
-    fecha: Optional[str] = Query(
-        None,
-        description="Fecha a partir de la cual consultar cambios, formato dd/mm/yyyy."
-    ),
-    nregistro: Optional[str] = Query(
-        None,
-        description="Número de registro AEMPS (repetir para múltiples)."
-    ),
-    metodo: str = Query(
-        "GET",
-        regex="^(GET|POST)$",
-        description="Método HTTP para la llamada interna (GET o POST)."
-    ),
+    fecha: Optional[str] = Query(None, description="Fecha (dd/mm/yyyy)."),
+    nregistro: Optional[str] = Query(None, description="Número de registro AEMPS."),
+    metodo: str = Query("GET", regex="^(GET|POST)$", description="Método HTTP interno."),
 ) -> Dict[str, Any]:
-    resultados = await cima.registro_cambios(fecha=fecha, nregistro=nregistro, metodo=metodo)
+    resultados = await safe_cima_call(
+        cima.registro_cambios,
+        fecha=fecha,
+        nregistro=nregistro,
+        metodo=metodo
+    )
 
-    # Construir metadatos usando la función auxiliar
-    parametros = {
+    parametros = {k: v for k, v in {
         "fecha": fecha,
         "nregistro": nregistro,
         "metodo": metodo,
-    }
+    }.items() if v is not None}
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultados, dict):
-        return {**resultados, **metadatos}
-    else:
-        return {"data": resultados, **metadatos}
+    respuesta = format_response(resultados, metadatos)
+
+    return respuesta
 
 
 # ---------------------------------------------------------------------------
@@ -864,11 +774,9 @@ async def doc_secciones(
     parametros = {"tipo_doc": tipo_doc, "nregistro": nregistro, "cn": cn}
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultados, dict):
-        return {**resultados, **metadatos}
-    else:
-        return {"data": resultados, **metadatos}
+    respuesta = format_response(resultados, metadatos)
 
+    return respuesta
 
 # ---------------------------------------------------------------------------
 # 9 · Documentos segmentados – Contenido
@@ -904,10 +812,9 @@ async def doc_contenido(
     parametros = {"tipo_doc": tipo_doc, "nregistro": nregistro, "cn": cn, "seccion": seccion}
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultados, dict):
-        return {**resultados, **metadatos}
-    else:
-        return {"data": resultados, **metadatos}
+    respuesta = format_response(resultados, metadatos)
+
+    return respuesta
 
 
 # ---------------------------------------------------------------------------
@@ -988,10 +895,9 @@ async def obtener_notas(
     parametros = {"nregistro": nregistro}
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultado, list):
-        return [ {**item, **metadatos} if isinstance(item, dict) else item for item in resultado ]
+    respuesta = format_response(resultado, metadatos)
 
-    return {"data": resultado, **metadatos}
+    return respuesta
 
 # ---------------------------------------------------------------------------
 # 11 · Materiales informativos
@@ -1067,13 +973,42 @@ async def obtener_materiales(
     parametros = {"nregistro": nregistro}
     metadatos = _build_metadata(parametros)
 
-    if isinstance(resultado, list):
-        return [
-            {**item, **metadatos} if isinstance(item, dict) else item 
-            for item in resultado
-        ]
-    return {"data": resultado, **metadatos}
+    respuesta = format_response(resultado, metadatos)
 
+    return respuesta
+
+# ----------------------------------------------------------------------------
+async def _html_multiple_zip(
+    tipo: Literal["ft", "p"],
+    registros: List[str],
+    filename: str,
+    status_no_content: int
+) -> StreamingResponse:
+    html_bytes, errors = await cima._fetch_multiple_bytes(tipo, registros, filename)
+    if not html_bytes:
+        raise HTTPException(
+            status_code=status_no_content,
+            detail={"error": "No se pudo generar ningún HTML", "errors": errors}
+        )
+
+    # Crear ZIP en memoria
+    bio = BytesIO()
+    with zipfile.ZipFile(bio, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        # Agregar cada HTML
+        for nr, data in html_bytes.items():
+            zf.writestr(f"{nr}_{filename}", data)
+        # Incluir metadata y errores si hay
+        metadata = _build_metadata({"nregistro": registros, "filename": filename})
+        zf.writestr("metadata.json", json.dumps(metadata))
+        if errors:
+            zf.writestr("errors.json", json.dumps(errors))
+    bio.seek(0)
+
+    return StreamingResponse(
+        bio,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=docs_{tipo}.zip"}
+    )
 
 # ---------------------------------------------------------------------------
 # 12a · HTML completo de ficha técnica
@@ -1081,69 +1016,29 @@ async def obtener_materiales(
 @app.get(
     "/doc-html/ft",
     operation_id="html_ficha_tecnica_multiple",
-    summary="HTML completo de ficha técnica para uno o varios registros",
-    description=constant.html_ft_multiple_description,
-    response_model=Dict[str, Any],
+    summary="Descarga ZIP de fichas técnicas para varios registros"
 )
 async def html_ficha_tecnica_multiple(
     nregistro: List[str] = Query(..., description="Nº de registro (repetir)"),
     filename: str = Query(..., description="Nombre de archivo HTML ('FichaTecnica.html')")
-) -> Any:
+) -> StreamingResponse:
     if not nregistro or not filename:
         raise HTTPException(status_code=400, detail="Se requiere al menos un 'nregistro' y un 'filename'.")
-
-    # caso único sin cambios
     if len(nregistro) == 1:
-        content = await cima.get_html(tipo="ft", nregistro=nregistro[0], filename=filename)
+        content = cima.get_html(tipo="ft", nregistro=nregistro[0], filename=filename)
         return StreamingResponse(content, media_type="text/html")
-
-    tasks = [
-        cima.get_html(tipo="ft", nregistro=nr, filename=filename)
-        for nr in nregistro
-    ]
-    respuestas = await asyncio.gather(*tasks, return_exceptions=True)
-
-    html_dict: Dict[str, str] = {}
-    errors: Dict[str, Any] = {}
-
-    for nr, resp in zip(nregistro, respuestas):
-        if isinstance(resp, Exception):
-            errors[nr] = {"detail": str(resp)}
-            continue
-
-        # consumimos el AsyncIterator para montar el HTML
-        content_bytes = b"".join([chunk async for chunk in resp])
-        html_dict[nr] = content_bytes.decode("utf-8")
-
-    metadatos = _build_metadata({"nregistro": nregistro, "filename": filename})
-
-    if not html_dict:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": "No se pudo generar ningún HTML",
-                "errors": errors
-            }
-        )
-    
-    response = {**html_dict, **metadatos}
-    if errors:
-        response["errors"] = errors
-    return response
-
+    return await _html_multiple_zip(tipo="ft", registros=nregistro, filename=filename, status_no_content=502)
 
 @app.get(
     "/doc-html/ft/{nregistro}/{filename}",
     operation_id="html_ficha_tecnica",
-    summary="HTML completo de ficha técnica (único registro)",
-    description=constant.html_ft_description,
+    summary="HTML completo de ficha técnica (único registro)"
 )
 async def html_ficha_tecnica(
     nregistro: str = Path(..., description="Número de registro"),
     filename: str = Path(..., description="Nombre de archivo HTML ('FichaTecnica.html')")
 ) -> StreamingResponse:
-    # Para la versión de un solo registro mantenemos el streaming puro
-    content = await cima.get_html(tipo="ft", nregistro=nregistro, filename=filename)
+    content = cima.get_html(tipo="ft", nregistro=nregistro, filename=filename)
     return StreamingResponse(content, media_type="text/html")
 
 
@@ -1153,76 +1048,31 @@ async def html_ficha_tecnica(
 @app.get(
     "/doc-html/p",
     operation_id="html_prospecto_multiple",
-    summary="HTML completo de prospecto para uno o varios registros",
-    description=constant.html_p_multiple_description,
-    response_model=Dict[str, Any],
+    summary="Descarga ZIP de prospectos para varios registros"
 )
 async def html_prospecto_multiple(
     nregistro: List[str] = Query(..., description="Nº de registro (repetir)"),
     filename: str = Query(..., description="Nombre de archivo HTML ('Prospecto.html')")
-) -> Any:
+) -> StreamingResponse:
     if not nregistro or not filename:
         raise HTTPException(status_code=400, detail="Se requiere al menos un 'nregistro' y un 'filename'.")
-
-    # caso único sin cambios
     if len(nregistro) == 1:
-        content = await cima.get_html(tipo="p", nregistro=nregistro[0], filename=filename)
+        content = cima.get_html(tipo="p", nregistro=nregistro[0], filename=filename)
         return StreamingResponse(content, media_type="text/html")
-
-    tasks = [
-        cima.get_html(tipo="p", nregistro=nr, filename=filename)
-        for nr in nregistro
-    ]
-    respuestas = await asyncio.gather(*tasks, return_exceptions=True)
-
-    html_dict: Dict[str, str] = {}
-    errors: Dict[str, Any] = {}
-
-    for nr, resp in zip(nregistro, respuestas):
-        if isinstance(resp, Exception):
-            errors[nr] = {"detail": str(resp)}
-            continue
-
-        content_bytes = b"".join([chunk async for chunk in resp])
-        html_dict[nr] = content_bytes.decode("utf-8")
-
-    metadatos = _build_metadata({"nregistro": nregistro, "filename": filename})
-
-    if not html_dict:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "No se pudo generar ningún HTML",
-                "errors": errors
-            }
-        )
-
-    response = {**html_dict, **metadatos}
-    if errors:
-        response["errors"] = errors
-    return response
+    return await _html_multiple_zip(tipo="p", registros=nregistro, filename=filename, status_no_content=404)
 
 @app.get(
     "/doc-html/p/{nregistro}/{filename}",
     operation_id="html_prospecto",
-    summary="HTML completo de prospecto (único registro)",
-    description=constant.html_p_description,
+    summary="HTML completo de prospecto (único registro)"
 )
 async def html_prospecto(
     nregistro: str = Path(..., description="Número de registro"),
     filename: str = Path(..., description="Nombre de archivo HTML ('Prospecto.html' o sección específica)")
 ) -> StreamingResponse:
-    # Para la versión de un solo registro mantenemos el streaming puro
-    content = await cima.get_html(tipo="p", nregistro=nregistro, filename=filename)
+    content = cima.get_html(tipo="p", nregistro=nregistro, filename=filename)
     return StreamingResponse(content, media_type="text/html")
 
-
-# AUX FUNCTION
-def _normalize(s: str) -> str:
-    return "".join(
-        c for c in unicodedata.normalize("NFD", s.lower())
-        if unicodedata.category(c) != "Mn"
-    )
 
 # ---------------------------------------------------------------------------
 # 12c · Descargar Informe de Posicionamiento Terapéutico (IPT)
@@ -1306,65 +1156,61 @@ async def descargar_ipt(
     operation_id="identificar_medicamento",
     summary="Identifica hasta 10 presentaciones en base a CN, nregistro o nombre",
     description=constant.identificar_medicamento,
-    response_model=Dict[str, Any],  # Ahora incluimos data + metadata
+    response_model=Dict[str, Any],
 )
 async def identificar_medicamento(
-    nregistro:    Optional[str] = Query(None),
-    cn:           Optional[str] = Query(None),
-    nombre:       Optional[str] = Query(None),
-    laboratorio:  Optional[str] = Query(None),
-    atc:          Optional[str] = Query(None),
-    estado:       Optional[str] = Query(None),
+    nregistro:     Optional[str] = Query(None),
+    cn:            Optional[str] = Query(None),
+    nombre:        Optional[str] = Query(None),
+    laboratorio:   Optional[str] = Query(None),
+    atc:           Optional[str] = Query(None),
+    estado:        Optional[str] = Query(None),
     comercializado: Optional[bool] = Query(None),
-    pagina:       int = Query(1, ge=1),
+    pagina:        int = Query(1, ge=1),
+    page_size:     int = Query(10, ge=1, le=100),
 ) -> Dict[str, Any]:
     df = app.state.df_presentaciones
-
-    # Empiezo con todo el df...
     filt = df
 
     if nregistro:
-        filt = filt[filt["Nº Registro"].astype(str)==nregistro]
+        filt = _filter_exact(filt, "Nº Registro", nregistro)
     if cn:
-        filt = filt[filt["Cod. Nacional"].astype(str)==cn]
+        filt = _filter_exact(filt, "Cod. Nacional", cn)
     if laboratorio:
-        filt = filt[filt["Laboratorio"]].str.contains(laboratorio, case=False, na=False)
+        filt = _filter_contains(filt, "Laboratorio", laboratorio)
     if atc:
-        filt = filt[filt["Cód. ATC"].str.contains(atc, case=False, na=False)]
+        filt = _filter_contains(filt, "Cód. ATC", atc)
     if estado:
-        filt = filt[filt["Estado"].str.contains(estado, case=False, na=False)]
+        filt = _filter_contains(filt, "Estado", estado)
     if comercializado is not None:
-        # asumimos columna “¿Comercializado?” con “SI”/“NO”
-        val = "SI" if comercializado else "NO"
-        filt = filt[filt["¿Comercializado?"]==val]
+        filt = _filter_bool(filt, "¿Comercializado?", comercializado)
 
-    # filtro por nombre con normalización/fuzzy como antes
     if nombre:
-        norm = _normalize(nombre)
-        opciones = filt["Presentación"].fillna("").apply(_normalize)
-        df_aux = filt.assign(_norm=opciones)
-        matches = df_aux[df_aux["_norm"].str.contains(norm)]
+        norm_query = _normalize(nombre)
+        series_norm = filt["Presentación"].fillna("").apply(_normalize)
+        filt['_norm'] = series_norm
+        matches = filt[filt['_norm'].str.contains(norm_query)]
         if matches.empty:
             from difflib import get_close_matches
-            similares = get_close_matches(norm, opciones.tolist(), n=10, cutoff=0.7)
-            matches = df_aux[df_aux["_norm"].isin(similares)]
-        filt = matches.drop(columns="_norm")
+            similares = get_close_matches(norm_query, series_norm.tolist(), n=10, cutoff=0.7)
+            matches = filt[filt['_norm'].isin(similares)]
+        filt = matches.drop(columns=['_norm'])
 
-    # paginación sencilla
-    start = (pagina-1)*10
-    end = start+10
-    docs = filt.iloc[start:end].to_dict(orient="records")
+    total = len(filt)
+    page_df = _paginate(filt, pagina, page_size)
+    docs = page_df.to_dict(orient="records")
 
-    # metadata
     metadatos = _build_metadata({
-        "nregistro": nregistro,
-        "cn": cn,
-        "nombre": nombre,
-        "laboratorio": laboratorio,
-        "atc": atc,
-        "estado": estado,
+        "nregistro":      nregistro,
+        "cn":             cn,
+        "nombre":         nombre,
+        "laboratorio":    laboratorio,
+        "atc":            atc,
+        "estado":         estado,
         "comercializado": comercializado,
-        "pagina": pagina,
+        "pagina":         pagina,
+        "page_size":      page_size,
+        "total":          total,
     })
 
     return {"data": docs, **metadatos}
@@ -1380,7 +1226,6 @@ async def identificar_medicamento(
         Permite buscar y filtrar productos farmacéuticos por cualquiera de las columnas:
         Código Nacional, Nombre, Tipo de fármaco, Principio activo, Laboratorio, Estado,
         fechas de alta/baja, aportación, precios, agrupación, flags clínicos, etc.
-        Todas las validaciones de tipo y formato aparecen en la especificación OpenAPI.
     """,
     tags=["Nomenclátor"],
     response_model=Dict[str, Any],
@@ -1409,101 +1254,82 @@ async def buscar_nomenclator(
     pagina:                    int             = Query(1, ge=1, description="Página"),
     page_size:                 int             = Query(10, ge=1, le=100, description="Resultados por página")
 ) -> Dict[str, Any]:
+    df = app.state.df_nomenclator
+    filt = df
 
-    df: pd.DataFrame = app.state.df_nomenclator
-    filt = df.copy()
-
-    # Filtros exactos / parciales
+    # Exact & partial text filters
     if codigo_nacional:
-        filt = filt[filt["Código Nacional"].astype(str) == codigo_nacional]
+        filt = _filter_exact(filt, "Código Nacional", codigo_nacional)
     if nombre_producto:
-        filt = filt[filt["Nombre del producto farmacéutico"]
-                    .str.contains(nombre_producto, case=False, na=False)]
+        filt = _filter_contains(filt, "Nombre del producto farmacéutico", nombre_producto)
     if tipo_farmaco:
-        filt = filt[filt["Tipo de fármaco"]
-                    .str.contains(tipo_farmaco, case=False, na=False)]
+        filt = _filter_contains(filt, "Tipo de fármaco", tipo_farmaco)
     if principio_activo:
-        filt = filt[filt["Principio activo o asociación de principios activos"]
-                    .str.contains(principio_activo, case=False, na=False)]
+        filt = _filter_contains(filt, "Principio activo o asociación de principios activos", principio_activo)
     if codigo_laboratorio:
-        filt = filt[filt["Código del laboratorio ofertante"].astype(str) == codigo_laboratorio]
+        filt = _filter_exact(filt, "Código del laboratorio ofertante", codigo_laboratorio)
     if nombre_laboratorio:
-        filt = filt[filt["Nombre del laboratorio ofertante"]
-                    .str.contains(nombre_laboratorio, case=False, na=False)]
+        filt = _filter_contains(filt, "Nombre del laboratorio ofertante", nombre_laboratorio)
     if estado:
-        filt = filt[filt["Estado"].str.contains(estado, case=False, na=False)]
+        filt = _filter_contains(filt, "Estado", estado)
     if aportacion_beneficiario:
-        filt = filt[filt["Aportación del beneficiario"]
-                    .str.contains(aportacion_beneficiario, case=False, na=False)]
+        filt = _filter_contains(filt, "Aportación del beneficiario", aportacion_beneficiario)
     if agrupacion_codigo:
-        filt = filt[filt["Código de la agrupación homogénea del producto sanitario"]
-                    .astype(str) == agrupacion_codigo]
+        filt = _filter_exact(filt, "Código de la agrupación homogénea del producto sanitario", agrupacion_codigo)
     if agrupacion_nombre:
-        filt = filt[filt["Nombre de la agrupación homogénea del producto sanitario"]
-                    .str.contains(agrupacion_nombre, case=False, na=False)]
+        filt = _filter_contains(filt, "Nombre de la agrupación homogénea del producto sanitario", agrupacion_nombre)
 
-    # Filtros numéricos
-    if precio_min_iva is not None:
-        filt = filt[filt["Precio venta al público con IVA"].astype(float) >= precio_min_iva]
-    if precio_max_iva is not None:
-        filt = filt[filt["Precio venta al público con IVA"].astype(float) <= precio_max_iva]
+    # Numeric filters
+    filt = _filter_numeric(filt, "Precio venta al público con IVA", precio_min_iva, precio_max_iva)
 
-    # Filtros booleanos
-    bool_map = {True: "SI", False: "NO"}
-    if diagnostico_hospitalario is not None:
-        filt = filt[filt["Diagnóstico hospitalario"].map(bool_map) == bool_map[diagnostico_hospitalario]]
-    if larga_duracion is not None:
-        filt = filt[filt["Tratamiento de larga duración"].map(bool_map) == bool_map[larga_duracion]]
-    if especial_control is not None:
-        filt = filt[filt["Especial control médico"].map(bool_map) == bool_map[especial_control]]
-    if medicamento_huerfano is not None:
-        filt = filt[filt["Medicamento huérfano"].map(bool_map) == bool_map[medicamento_huerfano]]
+    # Boolean filters
+    for flag, col in [
+        (diagnostico_hospitalario, "Diagnóstico hospitalario"),
+        (larga_duracion, "Tratamiento de larga duración"),
+        (especial_control, "Especial control médico"),
+        (medicamento_huerfano, "Medicamento huérfano"),
+    ]:
+        if flag is not None:
+            filt = _filter_bool(filt, col, flag)
 
-    # Filtros de fecha
-    def _parse(d: str) -> datetime:
-        return datetime.strptime(d, "%d/%m/%Y")
+    # Date filters
     if fecha_alta_desde:
-        d0 = _parse(fecha_alta_desde)
-        filt = filt[pd.to_datetime(filt["Fecha de alta en el nomenclátor"], dayfirst=True) >= d0]
+        filt = _filter_date(filt, "Fecha de alta en el nomenclátor", fecha_alta_desde, 'ge')
     if fecha_alta_hasta:
-        d1 = _parse(fecha_alta_hasta)
-        filt = filt[pd.to_datetime(filt["Fecha de alta en el nomenclátor"], dayfirst=True) <= d1]
+        filt = _filter_date(filt, "Fecha de alta en el nomenclátor", fecha_alta_hasta, 'le')
     if fecha_baja_desde:
-        d2 = _parse(fecha_baja_desde)
-        filt = filt[pd.to_datetime(filt["Fecha de baja en el nomenclátor"], dayfirst=True) >= d2]
+        filt = _filter_date(filt, "Fecha de baja en el nomenclátor", fecha_baja_desde, 'ge')
     if fecha_baja_hasta:
-        d3 = _parse(fecha_baja_hasta)
-        filt = filt[pd.to_datetime(filt["Fecha de baja en el nomenclátor"], dayfirst=True) <= d3]
+        filt = _filter_date(filt, "Fecha de baja en el nomenclátor", fecha_baja_hasta, 'le')
 
-    # Paginación dinámica
-    start = (pagina - 1) * page_size
-    end = start + page_size
-    records = filt.iloc[start:end].to_dict(orient="records")
+    total = len(filt)
+    page_df = _paginate(filt, pagina, page_size)
+    records = page_df.to_dict(orient="records")
 
-    # Metadata incluyendo page_size
     metadatos = _build_metadata({
-        "codigo_nacional":          codigo_nacional,
-        "nombre_producto":          nombre_producto,
-        "tipo_farmaco":             tipo_farmaco,
-        "principio_activo":         principio_activo,
-        "codigo_laboratorio":       codigo_laboratorio,
-        "nombre_laboratorio":       nombre_laboratorio,
-        "estado":                   estado,
-        "fecha_alta_desde":         fecha_alta_desde,
-        "fecha_alta_hasta":         fecha_alta_hasta,
-        "fecha_baja_desde":         fecha_baja_desde,
-        "fecha_baja_hasta":         fecha_baja_hasta,
-        "aportacion_beneficiario":  aportacion_beneficiario,
-        "precio_min_iva":           precio_min_iva,
-        "precio_max_iva":           precio_max_iva,
-        "agrupacion_codigo":        agrupacion_codigo,
-        "agrupacion_nombre":        agrupacion_nombre,
-        "diagnostico_hospitalario": diagnostico_hospitalario,
-        "larga_duracion":           larga_duracion,
-        "especial_control":         especial_control,
-        "medicamento_huerfano":     medicamento_huerfano,
-        "pagina":                   pagina,
-        "page_size":                page_size,
+        "codigo_nacional":         codigo_nacional,
+        "nombre_producto":         nombre_producto,
+        "tipo_farmaco":            tipo_farmaco,
+        "principio_activo":        principio_activo,
+        "codigo_laboratorio":      codigo_laboratorio,
+        "nombre_laboratorio":      nombre_laboratorio,
+        "estado":                  estado,
+        "fecha_alta_desde":        fecha_alta_desde,
+        "fecha_alta_hasta":        fecha_alta_hasta,
+        "fecha_baja_desde":        fecha_baja_desde,
+        "fecha_baja_hasta":        fecha_baja_hasta,
+        "aportacion_beneficiario": aportacion_beneficiario,
+        "precio_min_iva":          precio_min_iva,
+        "precio_max_iva":          precio_max_iva,
+        "agrupacion_codigo":       agrupacion_codigo,
+        "agrupacion_nombre":       agrupacion_nombre,
+        "diagnostico_hospitalario":diagnostico_hospitalario,
+        "larga_duracion":          larga_duracion,
+        "especial_control":        especial_control,
+        "medicamento_huerfano":    medicamento_huerfano,
+        "pagina":                  pagina,
+        "page_size":               page_size,
+        "total":                   total,
     })
 
     return {"data": records, **metadatos}

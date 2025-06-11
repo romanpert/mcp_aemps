@@ -18,11 +18,12 @@ import asyncio
 import json
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, Optional, Literal, AsyncIterator
+from typing import Any, Dict, List, Optional, Literal, AsyncIterator
 from datetime import datetime, timezone
 from dateutil import parser
 import aiohttp
 from aiohttp import ClientResponseError, ClientSession
+from fastapi import FastAPI, Query, Path, HTTPException
 
 import httpx
 from PIL import Image
@@ -420,13 +421,6 @@ async def get_html(
     nregistro: str,
     filename: str
 ) -> AsyncIterator[bytes]:
-    """
-    Stream del HTML completo de:
-      • Ficha técnica:  GET /dochtml/ft/{nregistro}/FichaTecnica.html  
-      • Prospecto   :  GET /dochtml/p/{nregistro}/Prospecto.html  
-    También admite rutas con sección: 
-      /dochtml/{tipo}/{nregistro}/{seccion}/{filename}
-    """
     path = f"dochtml/{tipo}/{nregistro}/{filename}"
     url = f"{BASE_URL}/{path}"
     client = httpx.AsyncClient(timeout=TIMEOUT, headers=_DEFAULT_HEADERS)
@@ -437,6 +431,48 @@ async def get_html(
             yield chunk
     finally:
         await client.aclose()
+
+
+async def get_html_bytes(
+    tipo: Literal["ft", "p"],
+    nregistro: str,
+    filename: str
+) -> bytes:
+    path = f"dochtml/{tipo}/{nregistro}/{filename}"
+    url = f"{BASE_URL}/{path}"
+    async with httpx.AsyncClient(timeout=TIMEOUT, headers=_DEFAULT_HEADERS) as client:
+        resp = await client.get(url, follow_redirects=True)
+        resp.raise_for_status()
+        return resp.content
+
+
+async def _fetch_multiple_bytes(
+    tipo: Literal["ft", "p"],
+    registros: List[str],
+    filename: str
+) -> tuple[Dict[str, bytes], Dict[str, Any]]:
+    """
+    Descarga concurrente de HTML completo en bytes.
+    Devuelve un dict de bytes por registro y un dict de errores.
+    """
+    tasks = [
+        asyncio.create_task(
+            get_html_bytes(tipo=tipo, nregistro=nr, filename=filename)
+        )
+        for nr in registros
+    ]
+    respuestas = await asyncio.gather(*tasks, return_exceptions=True)
+
+    html_bytes: Dict[str, bytes] = {}
+    errors: Dict[str, Any] = {}
+
+    for nr, resp in zip(registros, respuestas):
+        if isinstance(resp, Exception):
+            errors[nr] = {"detail": str(resp)}
+        else:
+            html_bytes[nr] = resp
+
+    return html_bytes, errors
 
 # ---------------------------------------------------------------------------
 # 13. Descargar documentos
@@ -507,3 +543,22 @@ async def download_ipt(
         base_dir=base_dir,
         timeout=timeout,
     )
+
+# ---------------------------------------------------------------------------
+# __main__ – demostración rápida (CLI)
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    async def demo():
+        print(json.dumps(await medicamento(cn="608679"), indent=2, ensure_ascii=False)[:2000])
+
+    # Maneja ejecución en entornos con loop activo (Jupyter) de forma segura
+    try:
+        asyncio.run(demo())
+    except RuntimeError as exc:
+        if "asyncio.run()" in str(exc):
+            import nest_asyncio
+
+            nest_asyncio.apply()
+            asyncio.get_event_loop().run_until_complete(demo())
+        else:
+            raise
