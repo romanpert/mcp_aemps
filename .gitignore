@@ -6,4 +6,9 @@ app/dependencies.py
 
 # Mantener la carpeta data/, pero descartar todos sus archivos
 !data/
-data/**/*
+data/assets/mcp_aemps_logo_v1.jpeg
+data/assets/mcp_aemps_logo_v2.jpg
+data/assets/mcp_aemps_logo_v2.psd
+data/documentacion/*
+data/img/*
+data/pdf/*
