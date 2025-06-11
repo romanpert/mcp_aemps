@@ -1,9 +1,16 @@
-from typing import Any, Dict, Optional, List
+# app/helpers
+
+from typing import Any, Dict, Optional, List, Literal
 from fastapi import FastAPI, Query, Body, HTTPException
 from datetime import datetime, timezone
 import httpx
 import pandas as pd
 import unicodedata
+from io import BytesIO
+import json
+import zipfile
+from fastapi.responses import StreamingResponse
+import app.cima_client as cima
 
 API_CIMA_AEMPS_VERSION = "1.23"
 
@@ -55,6 +62,27 @@ def _build_metadata(
         }
     }
 
+def _handle_single_result(nregistro: str, resultado: Any) -> Any:
+    """
+    Formatea la respuesta de una nota individual, lanzando 404 si no hay datos.
+    """
+    metadatos = _build_metadata({"nregistro": nregistro})
+
+    # No hay datos: lista vacía, None u otro valor falsy
+    if not resultado or (isinstance(resultado, list) and len(resultado) == 0):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Ninguna nota encontrada.",
+                **metadatos
+            }
+        )
+
+    # Hay datos: formateamos respuesta incluyendo metadatos
+    if isinstance(resultado, list):
+        return [{**item, **metadatos} for item in resultado]
+    return {"data": resultado, **metadatos}
+
 def _filter_exact(df: pd.DataFrame, column: str, value: str) -> pd.DataFrame:
     return df[df[column].astype(str) == value]
 
@@ -93,6 +121,38 @@ def _normalize(s: str) -> str:
     return "".join(
         c for c in unicodedata.normalize("NFD", s.lower())
         if unicodedata.category(c) != "Mn"
+    )
+
+async def _html_multiple_zip(
+    tipo: Literal["ft", "p"],
+    registros: List[str],
+    filename: str,
+    status_no_content: int
+) -> StreamingResponse:
+    html_bytes, errors = await cima._fetch_multiple_bytes(tipo, registros, filename)
+    if not html_bytes:
+        raise HTTPException(
+            status_code=status_no_content,
+            detail={"error": "No se pudo generar ningún HTML", "errors": errors}
+        )
+
+    # Crear ZIP en memoria
+    bio = BytesIO()
+    with zipfile.ZipFile(bio, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        # Agregar cada HTML
+        for nr, data in html_bytes.items():
+            zf.writestr(f"{nr}_{filename}", data)
+        # Incluir metadata y errores si hay
+        metadata = _build_metadata({"nregistro": registros, "filename": filename})
+        zf.writestr("metadata.json", json.dumps(metadata))
+        if errors:
+            zf.writestr("errors.json", json.dumps(errors))
+    bio.seek(0)
+
+    return StreamingResponse(
+        bio,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=docs_{tipo}.zip"}
     )
 
 # Helper para llamadas seguras a cima.*
