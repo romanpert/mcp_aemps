@@ -1,5 +1,5 @@
 # Ignorar todas las carpetas llamadas "test" en cualquier nivel
-test/**
+tests/**
 
 # Ignorar el archivo dependencies.py en app/
 app/dependencies.py

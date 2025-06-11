@@ -507,22 +507,3 @@ async def download_ipt(
         base_dir=base_dir,
         timeout=timeout,
     )
-
-# ---------------------------------------------------------------------------
-# __main__ – demostración rápida (CLI)
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    async def demo():
-        print(json.dumps(await medicamento(cn="608679"), indent=2, ensure_ascii=False)[:2000])
-
-    # Maneja ejecución en entornos con loop activo (Jupyter) de forma segura
-    try:
-        asyncio.run(demo())
-    except RuntimeError as exc:
-        if "asyncio.run()" in str(exc):
-            import nest_asyncio
-
-            nest_asyncio.apply()
-            asyncio.get_event_loop().run_until_complete(demo())
-        else:
-            raise

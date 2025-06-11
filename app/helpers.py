@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 
 API_CIMA_AEMPS_VERSION = "1.23"
 
+# VERSION API CIMA
+API_PSUM_VERSION = "2.0"
+
 def _build_metadata(
     parametros_busqueda: Dict[str, Any],
     version_api: str = API_CIMA_AEMPS_VERSION

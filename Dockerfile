@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Dependencias de sistema
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tesseract-ocr libmagic1 \
+ && apt-get install -y --no-install-recommends libmagic1 \
  && apt-get install -y --no-install-recommends jq \
  && rm -rf /var/lib/apt/lists/*
 
@@ -19,8 +19,7 @@ COPY pyproject.toml ./
 
 # ----- 3 · Instalar dependencias -----
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir huggingface_hub[hf_xet]
+ && pip install --no-cache-dir -r requirements.txt
 
 # ----- 3 · Copiamos código y spec -----
 COPY app ./app

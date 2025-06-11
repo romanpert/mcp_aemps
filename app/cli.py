@@ -255,7 +255,7 @@ def down():
 def status():
     """Comprueba si el servidor está en marcha."""
     if not PID_FILE.exists():
-        console.print("❌  No hay servidor en ejecución.", style="red")
+        console.print(f"❌  No hay servidor en ejecución.", style="red")
         raise typer.Exit(code=1)
     pid = int(PID_FILE.read_text())
     try:
@@ -266,7 +266,7 @@ def status():
             style="green",
         )
     except OSError:
-        console.print("❌  No se encontró proceso con PID {pid}.", style="red")
+        console.print(f"❌  No se encontró proceso con PID {pid}.", style="red")
         PID_FILE.unlink(missing_ok=True)
         CONFIG_FILE.unlink(missing_ok=True)
         raise typer.Exit(code=1)
