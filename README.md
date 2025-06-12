@@ -33,7 +33,7 @@ Un servidor FastAPI que proporciona acceso programático a la información de me
 
 ```bash
 # Clonar el repositorio
-git clone <tu-repositorio>
+git clone https://github.com/romanpert/mcp_aemps
 cd mcp_aemps
 
 # Construir y levantar los servicios
