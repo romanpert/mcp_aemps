@@ -61,7 +61,11 @@ async def lifespan(app: FastAPI):
         try:
             redis = Redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
             FastAPICache.init(RedisBackend(redis), prefix=settings.cache_prefix)
-            await FastAPILimiter.init(redis)
+            await FastAPILimiter.init(
+                redis,
+                prefix="mcp_rl:"       # prefijo en Redis para distinguir tus llaves
+            )
+            app.state.redis = redis    # opcional, para usarlo en middleware
             logger.info("Redis conectado: cache y rate limiter inicializados")
         except Exception as exc:
             logger.warning(

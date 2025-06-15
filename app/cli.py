@@ -35,6 +35,7 @@ import httpx
 from rich.console import Console
 from rich.panel import Panel
 from rich.align import Align
+from app.config import settings
 
 console = Console()
 APP_IMPORT = "app.mcp_aemps_server:app"
@@ -42,7 +43,7 @@ DEFAULT_UVICORN_HOST = "0.0.0.0"
 DEFAULT_ACCESS_HOST = "localhost"
 DEFAULT_PORT = 8000
 PID_FILE = Path(".mcp_aemps.pid")
-CONFIG_FILE = Path(".mcp_aemps.json")
+CONFIG_FILE = Path("app/mcp_aemps.json")
 
 cli = typer.Typer(add_completion=False, help="CLI del servidor MCP-AEMPS (AEMPS/CIMA)")
 
@@ -84,6 +85,8 @@ def _banner() -> None:
     )
     console.print(info_panel)
     console.print("")
+    console.print(f"[dim]Versión: {settings.mcp_version}[/dim]", justify="center")
+    console.print("")
 
 
 def _load_config() -> Tuple[str, str, int]:
@@ -101,21 +104,22 @@ def _load_config() -> Tuple[str, str, int]:
 
 
 def _save_config(uvicorn_host: str, access_host: str, port: int) -> None:
-    """Guarda configuración en disco."""
+    """Actualiza uvicorn_host, access_host y port sin perder el resto."""
+    data = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text())
+        except json.JSONDecodeError:
+            pass
+    data.update({
+        "uvicorn_host": uvicorn_host,
+        "access_host":  access_host,
+        "port":         port,
+    })
     try:
-        CONFIG_FILE.write_text(
-            json.dumps({
-                "uvicorn_host": uvicorn_host,
-                "access_host": access_host,
-                "port": port,
-            })
-        )
+        CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     except Exception:
-        console.print(
-            "⚠️  No se pudo guardar la configuración en disco.",
-            style="yellow",
-        )
-
+        console.print("⚠️  No se pudo guardar la configuración en disco.", style="yellow")
 
 def _find_free_port(start_port: int, host: str = DEFAULT_UVICORN_HOST) -> int:
     """

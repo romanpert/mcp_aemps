@@ -32,6 +32,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Depends, Request, Respo
 from fastapi_mcp import FastApiMCP
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer
 from fastapi.responses import JSONResponse, StreamingResponse
 import zipfile
@@ -63,24 +64,35 @@ from app.helpers import (_build_metadata, safe_cima_call, _filter_exact,
 # 1) Configuración global de logging
 # ------------------------------------------------------------
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger("mcp_aemps_server")
+
+# ------------------------------------------------------------
+# Parámetros de Rate Limiting
+# ------------------------------------------------------------
+RATE_LIMIT = 10        # peticiones permitidas
+RATE_PERIOD = 60       # en segundos
 
 # ---------------------------------------------------------------------------
 #   Crear la aplicación FastAPI + MCP
 # ---------------------------------------------------------------------------
 app = FastAPI(
     title="AEMPS CIMA MCP",
-    version="0.1.0",
+    version=settings.mcp_version,
     description="Herramientas MCP sobre la API CIMA de la AEMPS",
     openapi_url="/openapi.json",
     docs_url="/docs",
     redoc_url=None,
     lifespan=lifespan,
-    router_dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+    router_dependencies=[Depends(RateLimiter(times=RATE_LIMIT, seconds=RATE_PERIOD))],
     swagger_ui_parameters={"defaultModelsExpandDepth": -1},
+)
+
+app.add_middleware(
+    ProxyHeadersMiddleware,
+    trusted_hosts="*"   # o lista concreta de hosts/proxies
 )
 
 # ---------------------------------------------------------------------------
@@ -96,7 +108,43 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
-#   Middleware adicional (cabeceras de seguridad)
+# Middleware de Rate Limiting con cabeceras estándar
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    redis_rate = getattr(request.app.state, 'redis', None)
+    key = None
+    if redis_rate:
+        ip = request.client.host
+        key = f"mcp_rl:{ip}"
+        count = await redis_rate.incr(key)
+        if count == 1:
+            await redis_rate.expire(key, RATE_PERIOD)
+        if count > RATE_LIMIT:
+            retry = await redis_rate.ttl(key)
+            return Response(
+                content="Too Many Requests",
+                status_code=429,
+                headers={
+                    "X-RateLimit-Limit":     str(RATE_LIMIT),
+                    "X-RateLimit-Remaining": "0",
+                    "Retry-After":           str(retry),
+                },
+            )
+    # Procesar petición
+    response = await call_next(request)
+    # Inyectar cabeceras de Rate Limit
+    if redis_rate and key:
+        current = await redis_rate.get(key) or "0"
+        remaining = max(RATE_LIMIT - int(current), 0)
+        ttl = await redis_rate.ttl(key)
+        response.headers["X-RateLimit-Limit"] = str(RATE_LIMIT)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        response.headers["Retry-After"] = str(ttl)
+    return response
+
+# ---------------------------------------------------------------------------
+# Middleware adicional (cabeceras de seguridad)
 # ---------------------------------------------------------------------------
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
@@ -104,8 +152,6 @@ async def add_security_headers(request: Request, call_next):
     response.headers.update({
         "X-Frame-Options": "DENY",
         "X-Content-Type-Options": "nosniff",
-        # "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-        # "Content-Security-Policy": "default-src 'self'"
     })
     return response
 
@@ -755,6 +801,9 @@ class Format(str, Enum):
 
 @app.get(
     "/doc-contenido/{tipo_doc}",
+    operation_id="doc_contenido",
+    summary="Contenido de secciones de Ficha Técnica/prospecto",
+    description=constant.doc_contenido_description,
     response_model=Dict[str, Any],
     responses={
         200: {
@@ -1106,6 +1155,7 @@ from starlette.responses import StreamingResponse
 
 @app.get(
     "/descargar-ipt",
+    operation_id="descargar_ipt",
     summary="Descargar IPT para uno o varios CN (PDF suelto o multipart)",
     description=constant.descargar_ipt_description,
 )
@@ -1186,8 +1236,9 @@ async def descargar_ipt(
 # ---------------------------------------------------------------------------  
 @app.get(
     "/descargar-imagenes",
+    operation_id="descargar_imagenes",
     summary="Descargar imágenes para uno o varios CN (sola forma farmacéutica y/o caja)",
-    description="Descarga las imágenes (full) de forma farmacéutica y/o material de caja para uno o varios CN."
+    description=constant.descargar_imagenes_description
 )
 async def descargar_imagenes(
     background_tasks: BackgroundTasks,

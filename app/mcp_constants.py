@@ -858,6 +858,35 @@ Códigos HTTP:
 - **500 Internal Server Error**: error interno procesando la petición.
 """
 
+descargar_imagenes_description = """
+Descarga las imágenes (full) de la forma farmacéutica y/o del material de caja para uno o varios medicamentos.
+
+Uso:
+- Envía los parámetros como consulta en un GET.
+- El parámetro `cn` es repetible: uno o varios Códigos Nacionales.
+- `tipos` indica qué colecciones de imágenes descargar (por defecto ["formafarmac", "materialas"]).
+- `timeout` (segundos) para cada descarga individual (por defecto 15).
+- Las imágenes se almacenan temporalmente y se programará su eliminación al finalizar la petición.
+
+Parámetros:
+- `cn`               (list[str], obligatorio): uno o más Códigos Nacionales (repetible: ?cn=123&cn=456).
+- `tipos`            (list[str], opcional): tipos de imágenes a descargar: 'formafarmac' (forma farmacéutica) y/o 'materialas' (envase/caja).
+- `timeout`          (int, opcional): tiempo de espera en segundos para cada descarga de imagen.
+
+Respuesta:
+- Si se descarga una única imagen, se devuelve directamente como JPEG (`image/jpeg`).
+- Si hay varias imágenes, se devuelve un cuerpo `multipart/mixed` donde cada parte es un JPEG adjunto.
+- En HTTP 200 OK, se devuelven los bytes de las imágenes.
+- En HTTP 204 No Content no aplica (nunca vacío).
+- En caso de error, se devuelve el código correspondiente (ver abajo).
+
+Códigos HTTP:
+- **200 OK**: las imágenes se han obtenido correctamente (una o varias).
+- **400 Bad Request**: no se proporcionó ningún `cn`.
+- **404 Not Found**: ningún CN produjo imágenes.
+- **500 Internal Server Error**: error interno al procesar o limpiar las imágenes.
+"""
+
 system_info_prompt_description = """
 Devuelve el `MCP_AEMPS_SYSTEM_PROMPT`, que contiene:
 - Descripción completa de las herramientas MCP disponibles.
