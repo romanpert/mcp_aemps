@@ -71,7 +71,7 @@ logger = logging.getLogger("mcp_aemps_server")
 # ------------------------------------------------------------
 # Parámetros de Rate Limiting
 # ------------------------------------------------------------
-RATE_LIMIT = 10        # peticiones permitidas
+RATE_LIMIT = 100        # peticiones permitidas
 RATE_PERIOD = 60       # en segundos
 
 # ---------------------------------------------------------------------------
