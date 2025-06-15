@@ -56,8 +56,7 @@ from app.config import settings
 from app.startup import lifespan
 from app.helpers import (_build_metadata, safe_cima_call, _filter_exact,
                          _paginate, _filter_bool, _filter_contains, _filter_date,
-                         _filter_numeric, format_response, _normalize, 
-                         _handle_single_result, _html_multiple_zip,
+                         _filter_numeric, format_response, _normalize, _html_multiple_zip,
                          API_CIMA_AEMPS_VERSION, API_PSUM_VERSION)
 
 # ------------------------------------------------------------
@@ -90,10 +89,10 @@ app = FastAPI(
     swagger_ui_parameters={"defaultModelsExpandDepth": -1},
 )
 
-app.add_middleware(
-    ProxyHeadersMiddleware,
-    trusted_hosts="*"   # o lista concreta de hosts/proxies
-)
+# app.add_middleware(
+#     ProxyHeadersMiddleware,
+#     trusted_hosts="*"   # o lista concreta de hosts/proxies
+# )
 
 # ---------------------------------------------------------------------------
 #   CORS
@@ -105,43 +104,6 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
-
-
-# ---------------------------------------------------------------------------
-# Middleware de Rate Limiting con cabeceras estándar
-# ---------------------------------------------------------------------------
-@app.middleware("http")
-async def rate_limit_middleware(request: Request, call_next):
-    redis_rate = getattr(request.app.state, 'redis', None)
-    key = None
-    if redis_rate:
-        ip = request.client.host
-        key = f"mcp_rl:{ip}"
-        count = await redis_rate.incr(key)
-        if count == 1:
-            await redis_rate.expire(key, RATE_PERIOD)
-        if count > RATE_LIMIT:
-            retry = await redis_rate.ttl(key)
-            return Response(
-                content="Too Many Requests",
-                status_code=429,
-                headers={
-                    "X-RateLimit-Limit":     str(RATE_LIMIT),
-                    "X-RateLimit-Remaining": "0",
-                    "Retry-After":           str(retry),
-                },
-            )
-    # Procesar petición
-    response = await call_next(request)
-    # Inyectar cabeceras de Rate Limit
-    if redis_rate and key:
-        current = await redis_rate.get(key) or "0"
-        remaining = max(RATE_LIMIT - int(current), 0)
-        ttl = await redis_rate.ttl(key)
-        response.headers["X-RateLimit-Limit"] = str(RATE_LIMIT)
-        response.headers["X-RateLimit-Remaining"] = str(remaining)
-        response.headers["Retry-After"] = str(ttl)
-    return response
 
 # ---------------------------------------------------------------------------
 # Middleware adicional (cabeceras de seguridad)

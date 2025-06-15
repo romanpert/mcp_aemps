@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
             download_presentaciones(xls_path, timeout=60), # settings.timeout
             download_nomenclator_csv(csv_dir, timeout=60), # settings.timeout
         )
-        logger.info(
+        logger.debug(
             f"Descargas completadas: {downloaded_xls} ({downloaded_xls.stat().st_size} bytes), "
             f"{downloaded_csv} ({downloaded_csv.stat().st_size} bytes)"
         )
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
         )
         app.state.df_presentaciones = df_presentaciones
         app.state.df_nomenclator = df_nomenclator
-        logger.info(
+        logger.debug(
             f"DataFrames cargados: {len(df_presentaciones)} filas en Presentaciones.xls, "
             f"{len(df_nomenclator)} filas en nomenclátor.csv"
         )

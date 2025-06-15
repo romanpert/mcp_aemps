@@ -62,27 +62,6 @@ def _build_metadata(
         }
     }
 
-def _handle_single_result(nregistro: str, resultado: Any) -> Any:
-    """
-    Formatea la respuesta de una nota individual, lanzando 404 si no hay datos.
-    """
-    metadatos = _build_metadata({"nregistro": nregistro})
-
-    # No hay datos: lista vacía, None u otro valor falsy
-    if not resultado or (isinstance(resultado, list) and len(resultado) == 0):
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "Ninguna nota encontrada.",
-                **metadatos
-            }
-        )
-
-    # Hay datos: formateamos respuesta incluyendo metadatos
-    if isinstance(resultado, list):
-        return [{**item, **metadatos} for item in resultado]
-    return {"data": resultado, **metadatos}
-
 def _filter_exact(df: pd.DataFrame, column: str, value: str) -> pd.DataFrame:
     return df[df[column].astype(str) == value]
 
