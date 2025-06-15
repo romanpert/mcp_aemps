@@ -24,6 +24,8 @@ class Settings(BaseModel):
     allowed_origins: List[str] = Field(default=_cfg_data.get("allowed_origins", ["http://localhost:3000"]))
     cache_prefix: str = Field(default=_cfg_data.get("cache_prefix", "fastapi-cache"))
     data_dir: str = Field(default=_cfg_data.get("data_dir", str(BASE_DIR / "data")))
+    rate_limit: str = Field(default=_cfg_data.get("rate_limit", 100))
+    rate_period: str = Field(default=_cfg_data.get("rate_period", 60))
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
