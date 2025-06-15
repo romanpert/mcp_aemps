@@ -14,14 +14,21 @@
 from __future__ import annotations
 import os
 import json
+import httpx
 import pandas as pd
 import asyncio
 from datetime import datetime, timezone
+from dateutil import parser as date_parser
 from pathlib import Path
+import tempfile
+import shutil
 import logging
 from typing import Any, List, Optional, AsyncIterator, Tuple, Dict
 from httpx import HTTPStatusError
-from fastapi import Body, FastAPI, HTTPException, Query, Depends, Request, WebSocket, Path as FPath
+from enum import Enum
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import BackgroundTasks
+from fastapi import Body, FastAPI, HTTPException, Query, Depends, Request, Response, WebSocket, Path as FPath
 from fastapi_mcp import FastApiMCP
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +37,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import zipfile
 import io
 from io import BytesIO
+from pydantic import BaseModel
 # Cache
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
@@ -55,7 +63,7 @@ from app.helpers import (_build_metadata, safe_cima_call, _filter_exact,
 # 1) Configuración global de logging
 # ------------------------------------------------------------
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger("mcp_aemps_server")
@@ -101,21 +109,6 @@ async def add_security_headers(request: Request, call_next):
     })
     return response
 
-
-# ---------------------------------------------------------------------------
-#   Inicializar MCP
-# ---------------------------------------------------------------------------
-mcp = FastApiMCP(
-    app,
-    name="AEMPS CIMA MCP",
-    description="Acceso estructurado en tiempo real a datos regulatorios"
-)
-
-# Montamos las rutas MCP en /mcp (o el prefijo que configure FastApiMCP)
-mcp.mount()
-mcp.setup_server()
-
-
 # ---------------------------------------------------------------------------
 #   Health & Observability
 # ---------------------------------------------------------------------------
@@ -127,9 +120,8 @@ async def health():
 Instrumentator().instrument(app).expose(app)
 FastAPIInstrumentor.instrument_app(app)
 
-
 # ---------------------------------------------------------------------------
-# 1 · Medicamento (ficha única)
+# 1 · Medicamento (ficha única) — Metadata y formato unificado
 # ---------------------------------------------------------------------------
 @app.get(
     "/medicamento",
@@ -140,38 +132,66 @@ FastAPIInstrumentor.instrument_app(app)
 )
 @cache(expire=3600, key_builder=lambda func, *args, **kwargs: f"medicamento:{kwargs.get('cn','')}:{kwargs.get('nregistro','')}")
 async def obtener_medicamento(
-    cn: Optional[str] = Query(
-        None,
-        description="Código Nacional (CN) del medicamento. Ejemplo: '654321'.",
-        regex=r'^\d+$'
-    ),
-    nregistro: Optional[str] = Query(
-        None,
-        description="Número de registro AEMPS. Ejemplo: '00123'.",
-        regex=r'^\d+$'
-    ),
+    cn: Optional[str] = Query(None, regex=r'^\d+$', description="Código Nacional (CN)."),
+    nregistro: Optional[str] = Query(None, regex=r'^\d+$', description="Número de registro AEMPS."),
 ) -> Dict[str, Any]:
     # 1) Validación de entrada
     if not (cn or nregistro):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "Parámetros insuficientes",
-                "message": "Debe indicar al menos uno de los parámetros: 'cn' o 'nregistro'.",
-                "required_params": ["cn", "nregistro"]
-            }
-        )
+        raise HTTPException(400, detail={
+            "error": "Parámetros insuficientes",
+            "message": "Debe indicar al menos 'cn' o 'nregistro'.",
+            "required_params": ["cn", "nregistro"]
+        })
 
-    cn_clean = cn.strip() if cn else None
-    nr_clean = nregistro.strip() if nregistro else None
+    cn_clean = cn and cn.strip()
+    nr_clean = nregistro and nregistro.strip()
 
     logger.info(f"Consultando medicamento – CN: {cn_clean}, NRegistro: {nr_clean}")
 
-    # 2) Llamada segura a CIMA y manejo de 404/metadata
-    resultado = await safe_cima_call(cima.medicamento, cn=cn_clean, nregistro=nr_clean)
-    # _handle_single_result lanzará 404 si no hay datos, y añadirá metadata
-    final_result = _handle_single_result(nr_clean or cn_clean, resultado)
-    return final_result
+    # 2) Llamada segura a CIMA
+    try:
+        resultado = await safe_cima_call(cima.medicamento, cn=cn_clean, nregistro=nr_clean)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "error": "Error al obtener medicamento",
+                "message": str(exc.detail),
+                "support": "Contacte con el administrador si el problema persiste"
+            }
+        )
+
+    # 3) Post-proceso: parseo de timestamps antes de envolver en format_response
+    if isinstance(resultado, dict):
+        # 3.1) estado: puede contener aut, susp, rev
+        if isinstance(resultado.get("estado"), dict):
+            for key, val in list(resultado["estado"].items()):
+                resultado["estado"][key] = cima._parse_fecha(val)
+
+        # 3.2) docs[*].fecha
+        for doc in resultado.get("docs", []):
+            if "fecha" in doc:
+                doc["fecha"] = cima._parse_fecha(doc["fecha"])
+
+        # 3.3) fotos[*].fecha
+        for foto in resultado.get("fotos", []):
+            if "fecha" in foto:
+                foto["fecha"] = cima._parse_fecha(foto["fecha"])
+
+        # 3.4) presentaciones[*].estado (cada presentación tiene su propio dict estado)
+        for pres in resultado.get("presentaciones", []):
+            if isinstance(pres.get("estado"), dict):
+                for key, val in list(pres["estado"].items()):
+                    pres["estado"][key] = cima._parse_fecha(val)
+
+    # 4) Construcción de metadata
+    params = {k: v for k, v in {"cn": cn_clean, "nregistro": nr_clean}.items() if v}
+    metadatos = _build_metadata(params)
+
+    # 5) Formato de respuesta
+    return format_response(resultado, metadatos)
 
 # ---------------------------------------------------------------------------
 # 2 · Medicamentos (listado con filtros) — Metadata adaptada con manejo de errores
@@ -214,7 +234,6 @@ async def buscar_medicamentos(
     try:
         resultados = await safe_cima_call(cima.medicamentos, **params)
     except HTTPException as exc:
-        # 502 – error en la API externa
         if exc.status_code == 502:
             raise HTTPException(
                 status_code=502,
@@ -224,7 +243,6 @@ async def buscar_medicamentos(
                     "support": "Contacte con el administrador si el problema persiste"
                 }
             )
-        # 500 – error interno
         if exc.status_code == 500:
             raise HTTPException(
                 status_code=500,
@@ -234,12 +252,31 @@ async def buscar_medicamentos(
                     "support": "Contacte con el administrador si el problema persiste"
                 }
             )
-        # relanzar cualquier otro
         raise
 
-    # 2) Construir metadata y devolver
+    # 2) Post-proceso: parseo de fechas en cada resultado
+    if isinstance(resultados, dict) and "resultados" in resultados:
+        for item in resultados["resultados"]:
+            # 2.1) estado puede contener aut, susp, rev...
+            estado = item.get("estado")
+            if isinstance(estado, dict):
+                for fecha_key, ts in list(estado.items()):
+                    estado[fecha_key] = cima._parse_fecha(ts)
+
+            # 2.2) docs[*].fecha
+            for doc in item.get("docs", []):
+                if "fecha" in doc:
+                    doc["fecha"] = cima._parse_fecha(doc["fecha"])
+
+            # 2.3) fotos[*].fecha
+            for foto in item.get("fotos", []):
+                if "fecha" in foto:
+                    foto["fecha"] = cima._parse_fecha(foto["fecha"])
+
+    # 3) Construir metadata y devolver
     metadatos = _build_metadata(params)
     return format_response(resultados, metadatos)
+
 
 # ---------------------------------------------------------------------------
 # 3. POST · Ficha técnica (búsqueda de texto) — Metadata adaptada
@@ -313,25 +350,41 @@ async def listar_presentaciones(
     estuopsico: Optional[int] = Query(None, ge=0, le=1, description="1 = Incluye estupefacientes o psicótropos, 0 = Excluye."),
     pagina: Optional[int] = Query(1, ge=1, description="Número de página (mínimo 1)."),
 ) -> Dict[str, Any]:
-    # 1) LLamada segura a CIMA
     resultados = await safe_cima_call(cima.presentaciones, **locals())
+    if resultados is None:
+        resultados = {"totalFilas": 0, "pagina": pagina, "tamanioPagina": 0, "resultados": []}
 
-    # 2) Generar metadata
-    params = {
-        "cn": cn,
-        "nregistro": nregistro,
-        "vmp": vmp,
-        "vmpp": vmpp,
-        "idpractiv1": idpractiv1,
-        "comerc": comerc,
-        "estupefaciente": estupefaciente,
-        "psicotropo": psicotropo,
-        "estuopsico": estuopsico,
-        "pagina": pagina,
-    }
+    for item in resultados["resultados"]:
+        # 1) estado.* (aut, susp, rev…)
+        estado = item.get("estado")
+        if isinstance(estado, dict):
+            for key, ts in list(estado.items()):
+                estado[key] = cima._parse_fecha(ts)
+
+        # 2) docs[*].fecha
+        for doc in item.get("docs", []):
+            if "fecha" in doc:
+                doc["fecha"] = cima._parse_fecha(doc["fecha"])
+
+        # 3) fotos[*].fecha
+        for foto in item.get("fotos", []):
+            if "fecha" in foto:
+                foto["fecha"] = cima._parse_fecha(foto["fecha"])
+
+        # 4) detalleProblemaSuministro.ini/fini (opcional)
+        dps = item.get("detalleProblemaSuministro")
+        if isinstance(dps, dict):
+            if "ini" in dps:
+                dps["ini"] = cima._parse_fecha(dps["ini"])
+            if "fini" in dps:
+                dps["fini"] = cima._parse_fecha(dps["fini"])
+
+    params = {k: v for k, v in {
+        "cn": cn, "nregistro": nregistro, "vmp": vmp, "vmpp": vmpp,
+        "idpractiv1": idpractiv1, "comerc": comerc, "estupefaciente": estupefaciente,
+        "psicotropo": psicotropo, "estuopsico": estuopsico, "pagina": pagina,
+    }.items() if v is not None}
     metadatos = _build_metadata(params)
-
-    # 3) Formatear y devolver
     return format_response(resultados, metadatos)
 
 
@@ -354,41 +407,57 @@ async def obtener_presentacion(
     # --- caso único ---
     if len(cn) == 1:
         detalle = await safe_cima_call(cima.presentacion, cn[0])
-        # _handle_single_result lanza 404 si no hay datos o fusiona resultado+metadata
-        return _handle_single_result(cn[0], detalle)
+        # parsear todos los timestamps
+        if isinstance(detalle, dict):
+            # estado.* (aut, susp, rev…)
+            for key, ts in list(detalle.get("estado", {}).items()):
+                detalle["estado"][key] = cima._parse_fecha(ts)
+            # documentos
+            for doc in detalle.get("docs", []):
+                if "fecha" in doc:
+                    doc["fecha"] = cima._parse_fecha(doc["fecha"])
+            # fotos
+            for foto in detalle.get("fotos", []):
+                if "fecha" in foto:
+                    foto["fecha"] = cima._parse_fecha(foto["fecha"])
+
+        metadatos = _build_metadata({"cn": cn[0]})
+        return format_response(detalle, metadatos)
 
     # --- caso múltiple ---
-    # lanzamos todas las llamadas en paralelo con safe_cima_call
-    tasks = [safe_cima_call(cima.presentacion, codigo) for codigo in cn]
+    tasks = [safe_cima_call(cima.presentacion, code) for code in cn]
     respuestas = await asyncio.gather(*tasks, return_exceptions=True)
 
     result_dict: Dict[str, Any] = {}
     errors: Dict[str, Any] = {}
 
-    for codigo, resp in zip(cn, respuestas):
+    for code, resp in zip(cn, respuestas):
         if isinstance(resp, Exception):
-            # extraemos status/detail del HTTPException o fallback
-            if isinstance(resp, HTTPException):
-                errors[codigo] = {"status_code": resp.status_code, "detail": resp.detail}
-            else:
-                errors[codigo] = {"status_code": 500, "detail": str(resp)}
+            errors[code] = {"detail": str(resp)}
             continue
 
-        # éxito: fusionar |resp| con metadata
-        metadatos = _build_metadata({"cn": codigo})
+        # parsear todos los timestamps en cada respuesta
         if isinstance(resp, dict):
-            result_dict[codigo] = {**resp, **metadatos}
-        else:
-            result_dict[codigo] = {"data": resp, **metadatos}
+            for key, ts in list(resp.get("estado", {}).items()):
+                resp["estado"][key] = cima._parse_fecha(ts)
+            for doc in resp.get("docs", []):
+                if "fecha" in doc:
+                    doc["fecha"] = cima._parse_fecha(doc["fecha"])
+            for foto in resp.get("fotos", []):
+                if "fecha" in foto:
+                    foto["fecha"] = cima._parse_fecha(foto["fecha"])
+
+        metadatos = _build_metadata({"cn": code})
+        # guardar toda la respuesta formateada (datos + metadata)
+        result_dict[code] = format_response(resp, metadatos)
 
     if not result_dict:
-        # todos fallaron → 404
         raise HTTPException(
             status_code=404,
             detail={
                 "error": "Ninguna presentación encontrada",
                 "not_found_cn": list(errors.keys()),
-                "errors": errors
+                "errors": errors,
             }
         )
 
@@ -396,6 +465,7 @@ async def obtener_presentacion(
     if errors:
         response["errors"] = errors
     return response
+
 
 # ---------------------------------------------------------------------------
 # 6 · VMP/VMPP — Metadata adaptada
@@ -408,32 +478,40 @@ async def obtener_presentacion(
     response_model=Dict[str, Any],
 )
 async def buscar_vmpp(
-    practiv1: Optional[str] = Query(None, description="Nombre del principio activo principal."),
-    idpractiv1: Optional[str] = Query(None, description="ID del principio activo principal."),
-    dosis: Optional[str] = Query(None, description="Dosis del medicamento."),
-    forma: Optional[str] = Query(None, description="Nombre de la forma farmacéutica."),
-    atc: Optional[str] = Query(None, description="Código ATC o descripción parcial."),
-    nombre: Optional[str] = Query(None, description="Nombre del medicamento."),
-    modoArbol: Optional[int] = Query(None, description="Si se indica, devuelve resultados en modo jerárquico."),
-    pagina: Optional[int] = Query(1, ge=1, description="Número de página (si la API lo soporta)."),
+    practiv1: Optional[str]     = Query(None, description="Nombre del principio activo principal."),
+    idpractiv1: Optional[str]   = Query(None, description="ID del principio activo principal."),
+    dosis: Optional[str]        = Query(None, description="Dosis del medicamento."),
+    forma: Optional[str]        = Query(None, description="Nombre de la forma farmacéutica."),
+    atc: Optional[str]          = Query(None, description="Código ATC o descripción parcial."),
+    nombre: Optional[str]       = Query(None, description="Nombre del medicamento."),
+    modoArbol: Optional[int]    = Query(None, ge=0, le=1, description="0=plano, 1=jerárquico"),
+    pagina: Optional[int]       = Query(None, ge=1, description="Número de página (si aplica)"),
 ) -> Dict[str, Any]:
+    # 1) Validación: al menos un criterio
+    if not any([practiv1, idpractiv1, dosis, forma, atc, nombre, modoArbol]):
+        raise HTTPException(
+            status_code=400,
+            detail="Se requiere al menos uno de los parámetros: practiv1, idpractiv1, dosis, forma, atc, nombre, modoArbol"
+        )
+
+    # 2) Llamada a CIMA
     resultados = await safe_cima_call(cima.vmpp, **locals())
 
+    # 3) Construcción de metadata
     parametros = {k: v for k, v in {
-        "practiv1": practiv1,
+        "practiv1":   practiv1,
         "idpractiv1": idpractiv1,
-        "dosis": dosis,
-        "forma": forma,
-        "atc": atc,
-        "nombre": nombre,
-        "modoArbol": modoArbol,
-        "pagina": pagina,
+        "dosis":      dosis,
+        "forma":      forma,
+        "atc":        atc,
+        "nombre":     nombre,
+        "modoArbol":  modoArbol,
+        "pagina":     pagina,
     }.items() if v is not None}
     metadatos = _build_metadata(parametros)
 
-    respuesta = format_response(resultados, metadatos)
-
-    return respuesta
+    # 4) Envolvemos en data + metadata para homogeneidad
+    return format_response(resultados, metadatos)
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +558,23 @@ async def consultar_maestras(
 # ---------------------------------------------------------------------------
 # 7 · Registro de cambios
 # ---------------------------------------------------------------------------
+TIPO_CAMBIO_MAP = {
+    1: "Nuevo",
+    2: "Baja",
+    3: "Modificado",
+}
+
+CAMBIOS_MAP = {
+    "estado": "Estado de autorización",
+    "comerc":  "Estado de comercialización",
+    "prosp":   "Prospecto",
+    "ft":      "Ficha técnica",
+    "psum":    "Problemas de suministro",
+    "notasSeguridad": "Notas de seguridad",
+    "matinf":  "Materiales informativos",
+    "otros":   "Otros",
+}
+
 @app.get(
     "/registro-cambios",
     operation_id="registro_cambios",
@@ -489,7 +584,10 @@ async def consultar_maestras(
 )
 async def registro_cambios(
     fecha: Optional[str] = Query(None, description="Fecha (dd/mm/yyyy)."),
-    nregistro: Optional[str] = Query(None, description="Número de registro AEMPS."),
+    nregistro: Optional[List[str]] = Query(
+        None,
+        description="Número de registro AEMPS. Repetir parámetro: ?nregistro=123&nregistro=456"
+    ),
     metodo: str = Query("GET", regex="^(GET|POST)$", description="Método HTTP interno."),
 ) -> Dict[str, Any]:
     resultados = await safe_cima_call(
@@ -499,16 +597,50 @@ async def registro_cambios(
         metodo=metodo
     )
 
-    parametros = {k: v for k, v in {
-        "fecha": fecha,
-        "nregistro": nregistro,
-        "metodo": metodo,
-    }.items() if v is not None}
+    # Si la API devolvió 204 No Content, safe_cima_call devuelve None
+    if resultados is None:
+        resultados = {"totalFilas": 0, "pagina": 1, "tamanioPagina": 0, "resultados": []}
+
+    # ── Post-procesado de la lista de cambios ──
+    for item in resultados.get("resultados", []):
+        # 1) traducir tipoCambio
+        tipo = item.get("tipoCambio")
+        if tipo in TIPO_CAMBIO_MAP:
+            item["tipoCambioDesc"] = TIPO_CAMBIO_MAP[tipo]
+
+        # 2) traducir la lista de códigos de cambios
+        if isinstance(item.get("cambio"), list):
+            item["cambioDesc"] = [
+                CAMBIOS_MAP.get(code, code) for code in item["cambio"]
+            ]
+
+        # 3) parsear y formatear la fecha usando vuestro helper y luego dateutil
+        raw = item.get("fecha")
+        # obtenemos la ISO (si es ms UNIX o cadena parseable)
+        iso = cima._parse_fecha(raw)
+        if isinstance(iso, str):
+            try:
+                # isoparse convierte un ISO–8601 en datetime
+                dt = date_parser.isoparse(iso)
+                item["fechaStr"] = dt.strftime("%d/%m/%Y %H:%M:%S")
+            except (ValueError, date_parser.ParserError):
+                item["fechaStr"] = None
+        else:
+            item["fechaStr"] = None
+
+    # Construcción de parámetros para metadata
+    parametros = {
+        k: v
+        for k, v in {
+            "fecha": fecha,
+            "nregistro": nregistro,
+            "metodo": metodo,
+        }.items()
+        if v is not None
+    }
     metadatos = _build_metadata(parametros)
 
-    respuesta = format_response(resultados, metadatos)
-
-    return respuesta
+    return format_response(resultados, metadatos)
 
 # ---------------------------------------------------------------------------
 # 8 · Problemas de suministro
@@ -526,53 +658,30 @@ async def problemas_suministro(
         description="Uno o más Códigos Nacionales. Repetir parámetro: ?cn=123&cn=456"
     )
 ) -> Dict[str, Any]:
-    # Construir metadatos base
+    # Metadatos
     parametros = {"cn": cn}
-    metadatos = _build_metadata(parametros)
+    metadatos = _build_metadata(parametros, API_PSUM_VERSION)
+    metadatos["metadata"]["tipo_problema_suministros"] = cima.TIPOS_PROBLEMA
 
-    # Agregar tipos de problema a metadata
-    tipo_problema_suministros = {
-        1: "Consultar Nota Informativa",
-        2: "Suministro solo a hospitales",
-        3: "El médico prescriptor deberá determinar la posibilidad de utilizar otros tratamientos comercializados",
-        4: "Desabastecimiento temporal",
-        5: "Existe/n otro/s medicamento/s con el mismo principio activo y para la misma vía de administración",
-        6: "Existe/n otro/s medicamento/s con los mismos principios activos y para la misma vía de administración",
-        7: "Se puede solicitar como medicamento extranjero",
-        8: "Se recomienda restringir su prescripción reservándolo para casos en que no exista una alternativa apropiada",
-        9: "El titular de autorización de comercialización está realizando una distribución controlada al existir unidades limitadas"
-    }
-    metadatos["metadata"]["tipo_problema_suministros"] = tipo_problema_suministros
-
-    # Helper: formatear solo datos sin metadata
-    def extract_data(resp: Any) -> Any:
-        formatted = format_response(resp)
-        # Si format_response devuelve un dict con clave 'data', extraerla
-        return formatted.get('data', formatted)
-
-    # Caso: sin filtro de CN (todos)
+    # 1) Sin filtro: listado global
     if cn is None:
-        resultados = await safe_cima_call(cima.psuministro, None)
-        data = extract_data(resultados)
+        listado = await safe_cima_call(cima.psuministro, None)
+        data = listado.get("resultados", [])
         return {"data": data, "metadata": metadatos["metadata"]}
 
-    # Llamadas concurrentes por cada CN
-    tasks = [safe_cima_call(cima.psuministro, c) for c in cn]
-    respuestas = await asyncio.gather(*tasks, return_exceptions=True)
+    # 2) Con filtro: detalle concurrente
+    tareas = [safe_cima_call(cima.psuministro, codigo) for codigo in cn]
+    respuestas = await asyncio.gather(*tareas, return_exceptions=True)
 
-    result_dict: Dict[str, Any] = {}
+    data: Dict[str, Any] = {}
     errors: Dict[str, Any] = {}
-
     for codigo, resp in zip(cn, respuestas):
         if isinstance(resp, Exception):
             errors[codigo] = {"detail": str(resp)}
-            continue
+        else:
+            data[codigo] = resp
 
-        # Formatear y extraer solo los datos
-        result_dict[codigo] = extract_data(resp)
-
-    # Si no hay resultados exitosos, 404
-    if not result_dict:
+    if not data:
         raise HTTPException(
             status_code=404,
             detail={
@@ -582,25 +691,28 @@ async def problemas_suministro(
             }
         )
 
-    # Construir respuesta global
-    response: Dict[str, Any] = {"data": result_dict, "metadata": metadatos["metadata"]}
+    result = {"data": data, "metadata": metadatos["metadata"]}
     if errors:
-        response["errors"] = errors
-    return response
-
+        result["errors"] = errors
+    return result
 
 # ---------------------------------------------------------------------------
-# 9 · Documentos segmentados – Secciones
+# 8 · Documentos segmentados – Secciones
 # ---------------------------------------------------------------------------
+class Seccion(BaseModel):
+    seccion: str
+    titulo: str
+    orden: int
+
 @app.get(
     "/doc-secciones/{tipo_doc}",
     operation_id="doc_secciones",
     summary="Metadatos de secciones de Ficha Técnica/prospecto",
     description=constant.doc_secciones_description,
-    response_model=Dict[str, Any],
+    response_model=List[Seccion],
 )
 async def doc_secciones(
-    tipo_doc: int = Path(
+    tipo_doc: int = FPath(
         ..., ge=1, le=4,
         description="Tipo de documento (1=FT,2=Prospecto,3-4 otros)."
     ),
@@ -615,12 +727,18 @@ async def doc_secciones(
         raise HTTPException(status_code=400, detail="Se requiere 'nregistro' o 'cn'.")
 
     # Llamada segura a la API externa
-    resultados = await safe_cima_call(
-        cima.doc_secciones,
-        tipo_doc,
-        nregistro=nregistro,
-        cn=cn
-    )
+    try:
+        resultados = await safe_cima_call(
+            cima.doc_secciones,
+            tipo_doc,
+            nregistro=nregistro,
+            cn=cn
+        )
+    except Exception as e:
+        # Aquí capturas cualquier ValueError, TimeoutError, HTTPError…
+        logger.exception("Error llamando a CIMA para doc_secciones")
+        # Devolvemos un 502 Bad Gateway con detalle
+        raise HTTPException(status_code=502, detail=f"Error al obtener secciones: {e}")
 
     # Construir metadatos y formatear respuesta
     parametros = {"tipo_doc": tipo_doc, "nregistro": nregistro, "cn": cn}
@@ -628,47 +746,67 @@ async def doc_secciones(
     return format_response(resultados, metadatos)
 
 # ---------------------------------------------------------------------------
-# 9 · Documentos segmentados – Contenido
+# 9 · Documentos segmentados – Contenido (CORREGIDO)
 # ---------------------------------------------------------------------------
+class Format(str, Enum):
+    json = "json"
+    html = "html"
+    txt  = "txt"
+
 @app.get(
     "/doc-contenido/{tipo_doc}",
-    operation_id="doc_contenido",
-    summary="Contenido HTML/JSON de secciones de Ficha Técnica/prospecto",
-    description=constant.doc_contenido_description,
     response_model=Dict[str, Any],
+    responses={
+        200: {
+            "content": {
+                "application/json": {},
+                "text/html":        {},
+                "text/plain":       {},
+            }
+        }
+    }
 )
 async def doc_contenido(
-    tipo_doc: int = Path(
-        ..., ge=1, le=4,
-        description="Tipo de documento (1=FT,2=Prospecto,3-4 otros)."
-    ),
-    nregistro: Optional[str] = Query(
-        None, description="Número de registro del medicamento."
-    ),
-    cn: Optional[str] = Query(
-        None, description="Código Nacional del medicamento."
-    ),
-    seccion: Optional[str] = Query(
-        None, description="Sección a obtener, p.ej. '4.2'."
-    ),
-) -> Dict[str, Any]:
+    tipo_doc: int = FPath(..., ge=1, le=2),  # ✅ CORREGIDO: Solo 1-2 según documentación
+    nregistro: str | None = Query(None),
+    cn:        str | None = Query(None),
+    seccion:   str | None = Query(None),
+    format:    Format      = Query(Format.json, description="Formato: json, html o txt"),
+) -> Any:
     if not (nregistro or cn):
-        raise HTTPException(status_code=400, detail="Se requiere 'nregistro' o 'cn'.")
+        raise HTTPException(400, "Se requiere 'nregistro' o 'cn'.")
 
-    # Llamada segura a la API externa
-    resultados = await safe_cima_call(
-        cima.doc_contenido,
-        tipo_doc,
-        nregistro=nregistro,
-        cn=cn,
-        seccion=seccion
-    )
+    # Llamamos al cliente corregido
+    try:
+        resultado = await safe_cima_call(
+            cima.doc_contenido,
+            tipo_doc=tipo_doc,
+            nregistro=nregistro,
+            cn=cn,
+            seccion=seccion,
+            format=format.value,
+        )
+    except Exception as e:
+        # ✅ AÑADIDO: Más información del error para debugging
+        print(f"Error detallado: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"Error al obtener contenido: {e}")
 
-    # Construir metadatos y formatear respuesta
-    parametros = {"tipo_doc": tipo_doc, "nregistro": nregistro, "cn": cn, "seccion": seccion}
-    metadatos = _build_metadata(parametros)
-    return format_response(resultados, metadatos)
+    # Devolvemos tal cual: JSON validado, o HTML/txt crudo
+    media_type = {
+        Format.json: "application/json",
+        Format.html: "text/html",
+        Format.txt:  "text/plain",
+    }[format]
 
+    if format is Format.json:
+        return format_response(resultado, _build_metadata({
+            "tipo_doc": tipo_doc,
+            "nregistro": nregistro,
+            "cn": cn,
+            "seccion": seccion,
+        }))
+    else:
+        return Response(content=resultado, media_type=media_type)
 
 # ---------------------------------------------------------------------------
 # 10 · Notas de seguridad (unificado)
@@ -680,69 +818,76 @@ async def doc_contenido(
     description=constant.listar_notas_description,
     response_model=Dict[str, Any],
 )
-async def listar_notas(
-    nregistro: List[str] = Query(
-        ..., description="Número(s) de registro. Repetir parámetro: ?nregistro=AAA&nregistro=BBB"
-    )
-) -> Dict[str, Any]:
+async def listar_notas(nregistro: List[str] = Query(...)) -> Dict[str, Any]:
     if not nregistro:
-        raise HTTPException(status_code=400, detail="Se requiere al menos un 'nregistro'.")
-
-    # 1) Llamada segura al cliente CIMA
-    resultados = await safe_cima_call(cima.notas, nregistro=nregistro)
-
-    # 2) Verificar vacío
-    empty = (
-        resultados is None
-        or (isinstance(resultados, list) and len(resultados) == 0)
-        or (isinstance(resultados, dict) and not resultados)
-    )
-    if empty:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "Ninguna nota encontrada",
-                "not_found_nregistro": nregistro
-            }
-        )
-
-    # 3) Formatear respuesta
+        raise HTTPException(400, "…")
+    resultados = {}
+    errores = {}
+    for nr in nregistro:
+        try:
+            data = await safe_cima_call(cima.notas, nregistro=nr)
+            if data:
+                resultados[nr] = data
+            else:
+                errores[nr] = "sin notas"
+        except Exception as e:
+            errores[nr] = str(e)
+    if not resultados:
+        raise HTTPException(404, {"error": "ninguna nota", "detalles": errores})
     metadatos = _build_metadata({"nregistro": nregistro})
-    return format_response(resultados, metadatos)
-
+    return format_response({"notas": resultados, "errores": errores}, metadatos)
 
 @app.get(
-    "/notas/{nregistro}",
+    "/notas/{nregistros}",
     operation_id="obtener_notas",
-    summary="Detalle de notas de seguridad de un registro",
+    summary="Detalle de notas de seguridad de uno o varios registros",
     description=constant.obtener_notas_description,
     response_model=Dict[str, Any],
 )
 async def obtener_notas(
-    nregistro: str = Path(..., description="Número de registro")
-) -> Dict[str, Any]:
-    # 1) Llamada segura
-    resultado = await safe_cima_call(cima.notas, nregistro=nregistro)
-
-    # 2) Verificar vacío
-    empty = (
-        resultado is None
-        or (isinstance(resultado, list) and len(resultado) == 0)
-        or (isinstance(resultado, dict) and not resultado)
+    nregistros: str = FPath(
+        ...,
+        description="Número(s) de registro. Si son varios, sepáralos con comas: AAA,BBB,CCC"
     )
-    if empty:
+) -> Dict[str, Any]:
+    # 1) Separar en lista
+    registros = [nr.strip() for nr in nregistros.split(",") if nr.strip()]
+
+    resultados: Dict[str, Any] = {}
+    errores: Dict[str, str] = {}
+
+    # 2) Llamar uno a uno al cliente
+    for nr in registros:
+        try:
+            data = await safe_cima_call(cima.notas, nregistro=nr)
+            empty = (
+                data is None
+                or (isinstance(data, list) and not data)
+                or (isinstance(data, dict) and not data)
+            )
+            if empty:
+                errores[nr] = "sin notas"
+            else:
+                resultados[nr] = data
+        except Exception as e:
+            errores[nr] = str(e)
+
+    # 3) Si no hay resultados válidos, 404
+    if not resultados:
         raise HTTPException(
             status_code=404,
             detail={
                 "error": "Ninguna nota encontrada",
-                "not_found_nregistro": [nregistro]
+                "not_found_nregistro": registros,
+                "errores": errores,
             }
         )
 
-    # 3) Formatear respuesta individual
-    metadatos = _build_metadata({"nregistro": nregistro})
-    return format_response(resultado, metadatos)
-
+    # 4) Formatear la respuesta
+    metadatos = _build_metadata({"nregistro": registros})
+    # Podemos devolver la misma estructura que usamos en listar_notas:
+    payload = {"notas": resultados, "errores": errores}
+    return format_response(payload, metadatos)
 
 # ---------------------------------------------------------------------------
 # 11 · Materiales informativos (unificado)
@@ -756,22 +901,30 @@ async def obtener_notas(
 )
 async def listar_materiales(
     nregistro: List[str] = Query(
-        ..., description="Número(s) de registro. Repetir parámetro: ?nregistro=AAA&nregistro=BBB"
+        ..., description="Repite el parámetro: ?nregistro=AAA&nregistro=BBB"
     )
 ) -> Dict[str, Any]:
     if not nregistro:
         raise HTTPException(status_code=400, detail="Se requiere al menos un 'nregistro'.")
 
-    # 1) Llamada segura al cliente CIMA
-    resultados = await safe_cima_call(cima.materiales, nregistro=nregistro)
+    # 1. Crea una tarea por registro
+    tareas = [
+        safe_cima_call(cima.materiales, nregistro=nr)
+        for nr in nregistro
+    ]
+    # 2. Ejecuta en paralelo y recoge respuestas
+    respuestas = await asyncio.gather(*tareas, return_exceptions=True)
 
-    # 2) Verificar vacío
-    empty = (
-        resultados is None
-        or (isinstance(resultados, list) and len(resultados) == 0)
-        or (isinstance(resultados, dict) and not resultados)
-    )
-    if empty:
+    # 3. Filtra errores y None
+    data = []
+    for nr, res in zip(nregistro, respuestas):
+        if isinstance(res, Exception):
+            # opcional: loguear o mapear a HTTPException
+            continue
+        if res:  # aquí res es {"nregistro": nr, "materiales": […]}
+            data.append(res)
+
+    if not data:
         raise HTTPException(
             status_code=404,
             detail={
@@ -780,31 +933,31 @@ async def listar_materiales(
             }
         )
 
-    # 3) Formatear respuesta
+    # 4. Monta metadatos
     metadatos = _build_metadata({"nregistro": nregistro})
-    return format_response(resultados, metadatos)
 
+    # 5. Devuelve un dict con data+meta (cumple Dict[str,Any])
+    return {
+        "data": data,
+        "meta": metadatos
+    }
 
 @app.get(
     "/materiales/{nregistro}",
     operation_id="obtener_materiales",
     summary="Detalle de materiales informativos de un registro",
-    description=constant.obtener_materiales_description,
     response_model=Dict[str, Any],
 )
 async def obtener_materiales(
-    nregistro: str = Path(..., description="Número de registro")
+    nregistro: str = FPath(..., description="Número de registro")
 ) -> Dict[str, Any]:
-    # 1) Llamada segura
-    resultado = await safe_cima_call(cima.materiales, nregistro=nregistro)
+    try:
+        resultado = await safe_cima_call(cima.materiales, nregistro=nregistro)
+    except Exception as e:
+        logger.error("Error llamando a CIMA para obtener material %s: %s", nregistro, e, exc_info=True)
+        raise HTTPException(status_code=502, detail="Error al consultar material en CIMA.")
 
-    # 2) Verificar vacío
-    empty = (
-        resultado is None
-        or (isinstance(resultado, list) and len(resultado) == 0)
-        or (isinstance(resultado, dict) and not resultado)
-    )
-    if empty:
+    if not resultado:
         raise HTTPException(
             status_code=404,
             detail={
@@ -813,7 +966,8 @@ async def obtener_materiales(
             }
         )
 
-    # 3) Formatear respuesta
+    # Aquí NO desempaquetamos resultado["materiales"], 
+    # devolvemos el dict completo {nregistro, materiales}
     metadatos = _build_metadata({"nregistro": nregistro})
     return format_response(resultado, metadatos)
 
@@ -825,28 +979,25 @@ async def obtener_materiales(
     operation_id="html_ficha_tecnica_multiple",
     summary="Descarga ZIP de fichas técnicas para varios registros",
     description=constant.html_ft_multiple_description,
+    response_model=None,
 )
 async def html_ficha_tecnica_multiple(
     nregistro: List[str] = Query(..., description="Nº de registro (repetir)"),
     filename: str = Query(..., description="Nombre de archivo HTML ('FichaTecnica.html')")
-) -> StreamingResponse:
-    # 1) Validación de entrada
-    if not nregistro or not filename:
-        raise HTTPException(status_code=400, detail="Se requiere al menos un 'nregistro' y un 'filename'.")
-
-    # 2) Caso único: html directo
+):
     if len(nregistro) == 1:
         try:
-            # Si get_html fuera async, usar safe_cima_call; si es sync, envolvemos en try/except
-            content = cima.get_html(tipo="ft", nregistro=nregistro[0], filename=filename)
-        except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Error al obtener HTML de ficha técnica: {e}"
+            data = await cima.get_html_bytes(
+                tipo="ft",
+                nregistro=nregistro[0],
+                filename=filename
             )
-        return StreamingResponse(content, media_type="text/html")
+        except HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise HTTPException(404, "Ficha técnica no encontrada")
+            raise HTTPException(502, str(e))
+        return HTMLResponse(content=data)
 
-    # 3) Múltiples: ZIP con helper que ya lanza 404 o 502 según status_no_content
     return await _html_multiple_zip(
         tipo="ft",
         registros=nregistro,
@@ -854,26 +1005,34 @@ async def html_ficha_tecnica_multiple(
         status_no_content=404
     )
 
-
 @app.get(
-    "/doc-html/ft/{nregistro}/{filename}",
+    "/doc-html/ft/{nregistro}/{filename:path}",
     operation_id="html_ficha_tecnica",
     summary="HTML completo de ficha técnica (único registro)",
     description=constant.html_ft_description,
+    response_model=None,
 )
 async def html_ficha_tecnica(
-    nregistro: str = Path(..., description="Número de registro"),
-    filename: str = Path(..., description="Nombre de archivo HTML ('FichaTecnica.html')")
-) -> StreamingResponse:
+    nregistro: str = FPath(..., description="Número de registro"),
+    filename: str = FPath(
+        ...,
+        description="Ruta y nombre de archivo HTML ('FichaTecnica.html' o '1/FichaTecnica.html')"
+    )
+):
     try:
-        content = cima.get_html(tipo="ft", nregistro=nregistro, filename=filename)
-    except Exception as e:
+        # filename puede ser, p.ej., "FichaTecnica.html" o "1/FichaTecnica.html"
+        data = await cima.get_html_bytes(tipo="ft", nregistro=nregistro, filename=filename)
+    except HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ficha técnica {nregistro} sección '{filename}' no encontrada"
+            )
         raise HTTPException(
             status_code=502,
             detail=f"Error al obtener HTML de ficha técnica: {e}"
         )
-    return StreamingResponse(content, media_type="text/html")
-
+    return HTMLResponse(content=data)
 
 # ---------------------------------------------------------------------------
 # 12b · HTML completo de prospecto (unificado)
@@ -883,24 +1042,26 @@ async def html_ficha_tecnica(
     operation_id="html_prospecto_multiple",
     summary="Descarga ZIP de prospectos para varios registros",
     description=constant.html_p_multiple_description,
+    response_model=None,
 )
 async def html_prospecto_multiple(
     nregistro: List[str] = Query(..., description="Nº de registro (repetir)"),
     filename: str = Query(..., description="Nombre de archivo HTML ('Prospecto.html')")
-) -> StreamingResponse:
+):
     if not nregistro or not filename:
         raise HTTPException(status_code=400, detail="Se requiere al menos un 'nregistro' y un 'filename'.")
 
     if len(nregistro) == 1:
         try:
-            content = cima.get_html(tipo="p", nregistro=nregistro[0], filename=filename)
-        except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Error al obtener HTML de prospecto: {e}"
-            )
-        return StreamingResponse(content, media_type="text/html")
+            # usamos la versión que devuelve bytes completos
+            data = await cima.get_html_bytes(tipo="p", nregistro=nregistro[0], filename=filename)
+        except HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise HTTPException(404, "Prospecto no encontrado")
+            raise HTTPException(status_code=502, detail=f"Error al obtener HTML de prospecto: {e}")
+        return HTMLResponse(content=data)
 
+    # varios registros → ZIP (igual que antes)
     return await _html_multiple_zip(
         tipo="p",
         registros=nregistro,
@@ -908,96 +1069,211 @@ async def html_prospecto_multiple(
         status_no_content=404
     )
 
-
 @app.get(
-    "/doc-html/p/{nregistro}/{filename}",
+    "/doc-html/p/{nregistro}/{filename:path}",
     operation_id="html_prospecto",
     summary="HTML completo de prospecto (único registro)",
-    description=constant.html_p_description
+    description=constant.html_p_description,
+    response_model=None,
 )
 async def html_prospecto(
-    nregistro: str = Path(..., description="Número de registro"),
-    filename: str = Path(..., description="Nombre de archivo HTML ('Prospecto.html' o sección específica)")
-) -> StreamingResponse:
+    nregistro: str = FPath(..., description="Número de registro"),
+    filename: str = FPath(
+        ..., 
+        description="Ruta y nombre de archivo HTML ('Prospecto.html' o '2/Prospecto.html')"
+    )
+):
     try:
-        content = cima.get_html(tipo="p", nregistro=nregistro, filename=filename)
-    except Exception as e:
+        # filename puede ser p.ej. "Prospecto.html" o "2/Prospecto.html"
+        data = await cima.get_html_bytes(tipo="p", nregistro=nregistro, filename=filename)
+    except HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Prospecto {nregistro} sección '{filename}' no encontrado"
+            )
         raise HTTPException(
             status_code=502,
             detail=f"Error al obtener HTML de prospecto: {e}"
         )
-    return StreamingResponse(content, media_type="text/html")
-
+    return HTMLResponse(content=data)
 
 # ---------------------------------------------------------------------------
-# 12c · Descargar Informe de Posicionamiento Terapéutico (IPT)
+# 12c · Descargar IPT: PDF único o multipart/mixed con varios PDFs
 # ---------------------------------------------------------------------------
+from secrets import token_hex
+from starlette.responses import StreamingResponse
+
 @app.get(
     "/descargar-ipt",
-    operation_id="descargar_ipt",
-    summary="Descargar IPT para uno o varios CN o registros",
+    summary="Descargar IPT para uno o varios CN (PDF suelto o multipart)",
     description=constant.descargar_ipt_description,
-    response_model=Dict[str, Any],
 )
 async def descargar_ipt(
-    request: Request,
-    cn: Optional[List[str]] = Query(None, description="CN (repetir)"),
-    nregistro: Optional[List[str]] = Query(None, description="NRegistro (repetir)"),
-    zip: bool = Query(False, description="Si se quiere descargar todo en un ZIP")
-) -> Any:
-    if not cn and not nregistro:
-        raise HTTPException(status_code=400, detail="Debe especificar al menos un 'cn' o un 'nregistro'.")
+    background_tasks: BackgroundTasks,
+    cn: List[str] = Query(..., description="Uno o varios CN (repetible)"),
+    timeout: int = 15,
+):
+    if not cn:
+        raise HTTPException(400, "Debe proporcionar al menos un CN")
 
-    # 1) Ejecutar descargas en paralelo, capturando excepciones
-    inputs: List[Tuple[str, str]] = []
-    tasks: List[Any] = []
-    if cn:
-        for c in cn:
-            inputs.append(("cn", c))
-            tasks.append(safe_cima_call(cima.download_docs, cn=c, nregistro=None, tipos=["ipt"]))
-    if nregistro:
-        for nr in nregistro:
-            inputs.append(("nregistro", nr))
-            tasks.append(safe_cima_call(cima.download_docs, cn=None, nregistro=nr, tipos=["ipt"]))
+    temp_root = Path(tempfile.mkdtemp(prefix="ipts_"))
+    descargados: dict[str, Path] = {}
+    errores: list[str] = []
 
-    respuestas = await asyncio.gather(*tasks, return_exceptions=True)
+    def _cleanup(p: Path): shutil.rmtree(p, ignore_errors=True)
 
-    # 2) Procesar rutas y errores
-    data_paths: List[str] = []
-    errors: Dict[str, Any] = {}
-    for (kind, val), resp in zip(inputs, respuestas):
-        if isinstance(resp, Exception):
-            errors[f"{kind}={val}"] = {"detail": str(resp)}
-            continue
-        data_paths.extend(resp)
+    try:
+        # Descarga secuencial (evita 429)
+        for code in cn:
+            try:
+                rutas = await cima.download_ipt(
+                    cn=code,
+                    base_dir=str(temp_root / code),
+                    timeout=timeout,
+                )
+                if rutas:
+                    descargados[code] = Path(rutas[0])
+                    logger.debug("✅ %s → %s", code, rutas[0])
+                else:
+                    errores.append(f"{code}: sin IPT")
+            except Exception as e:
+                errores.append(f"{code}: {type(e).__name__}")
+                logger.exception("❌ %s", code)
 
-    # 3) Sin ficheros descargados ⇒ 404
-    if not data_paths:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "No se descargó ningún IPT", "errors": errors}
-        )
+        if not descargados:
+            raise HTTPException(404, "No se encontró ningún IPT")
 
-    # 4) Devolver ZIP o JSON de URLs
-    base_static_url = request.url_for("data")
-    urls = [f"{base_static_url}/{Path(p).relative_to('data').as_posix()}" for p in data_paths]
+        background_tasks.add_task(_cleanup, temp_root)
 
-    if zip:
-        buffer = BytesIO()
-        with zipfile.ZipFile(buffer, "w") as zf:
-            for path in data_paths:
-                zf.write(path, arcname=Path(path).name)
-        buffer.seek(0)
+        # --- un único PDF --------------------------------------------------
+        if len(descargados) == 1:
+            pdf = next(iter(descargados.values()))
+            return FileResponse(
+                pdf,
+                media_type="application/pdf",
+                filename=pdf.name,
+            )
+
+        # --- varios PDFs → multipart/mixed --------------------------------
+        boundary = f"ipts-{token_hex(8)}"
+
+        def _iter_parts():
+            for code, path in descargados.items():
+                yield f"--{boundary}\r\n".encode()
+                yield b"Content-Type: application/pdf\r\n"
+                yield f'Content-Disposition: attachment; filename="{code}_{path.name}"\r\n\r\n'.encode()
+                yield path.read_bytes()
+                yield b"\r\n"
+            yield f"--{boundary}--\r\n".encode()
+
         return StreamingResponse(
-            buffer,
-            media_type="application/x-zip-compressed",
-            headers={"Content-Disposition": 'attachment; filename="ipts.zip"'}
+            _iter_parts(),
+            media_type=f"multipart/mixed; boundary={boundary}",
+            headers={"Content-Disposition": 'attachment; filename="ipts.multipart"'},
         )
 
-    response = {"urls": urls}
-    if errors:
-        response["errors"] = errors
-    return JSONResponse(response)
+    except HTTPException:
+        _cleanup(temp_root)
+        raise
+    except Exception as e:
+        logger.exception("Fallo inesperado descargar_ipt(): %s", e)
+        _cleanup(temp_root)
+        raise HTTPException(500, "Error interno en descargar_ipt")
+
+# ---------------------------------------------------------------------------
+# 12d · Descargar imágenes
+# ---------------------------------------------------------------------------  
+@app.get(
+    "/descargar-imagenes",
+    summary="Descargar imágenes para uno o varios CN (sola forma farmacéutica y/o caja)",
+    description="Descarga las imágenes (full) de forma farmacéutica y/o material de caja para uno o varios CN."
+)
+async def descargar_imagenes(
+    background_tasks: BackgroundTasks,
+    cn: list[str] = Query(..., description="Uno o varios CN (repetible)"),
+    tipos: list[str] = Query(["formafarmac", "materialas"], description="Tipos a descargar: ‘formafarmac’, ‘materialas’"),
+    timeout: int = 15,
+):
+    if not cn:
+        raise HTTPException(400, "Debe proporcionar al menos un CN")
+
+    # Crear carpeta temporal para esta petición
+    temp_root = Path(tempfile.mkdtemp(prefix="imgs_"))
+    descargados: dict[str, list[Path]] = {}
+    errores: list[str] = []
+
+    def _cleanup(path: Path):
+        shutil.rmtree(path, ignore_errors=True)
+
+    try:
+        # Por cada CN, descargar las imágenes solicitadas
+        for code in cn:
+            try:
+                rutas = await cima.descargar_imagen(
+                    cn=code,
+                    tipos=tipos,
+                    base_dir=str(temp_root / code),
+                    timeout=timeout,
+                )
+                if rutas:
+                    # Convertir a Path y almacenar
+                    descargados[code] = [Path(r) for r in rutas]
+                    logger.debug("✅ %s → %s", code, rutas)
+                else:
+                    errores.append(f"{code}: sin imágenes")
+            except Exception as e:
+                errores.append(f"{code}: {type(e).__name__}")
+                logger.exception("❌ %s", code)
+
+        if not descargados:
+            # Ningún CN produjo imágenes
+            raise HTTPException(404, "No se encontró ninguna imagen para los CN proporcionados")
+
+        # Programar limpieza al final de la petición
+        background_tasks.add_task(_cleanup, temp_root)
+
+        # Aplana todas las rutas en una sola lista
+        todas_rutas = [ruta for rutas in descargados.values() for ruta in rutas]
+
+        # Si solo hay una imagen, la devolvemos directamente
+        if len(todas_rutas) == 1:
+            solo = todas_rutas[0]
+            return FileResponse(
+                solo,
+                media_type="image/jpeg",
+                filename=solo.name,
+            )
+
+        # Varias imágenes → multipart/mixed
+        boundary = f"imgs-{token_hex(8)}"
+
+        def _iter_parts():
+            for code, rutas in descargados.items():
+                for ruta in rutas:
+                    yield f"--{boundary}\r\n".encode()
+                    yield b"Content-Type: image/jpeg\r\n"
+                    yield (
+                        f'Content-Disposition: attachment; filename="{code}_{ruta.name}"\r\n\r\n'
+                    ).encode()
+                    yield ruta.read_bytes()
+                    yield b"\r\n"
+            yield f"--{boundary}--\r\n".encode()
+
+        return StreamingResponse(
+            _iter_parts(),
+            media_type=f"multipart/mixed; boundary={boundary}",
+            headers={"Content-Disposition": 'attachment; filename="imagenes.multipart"'},
+        )
+
+    except HTTPException:
+        _cleanup(temp_root)
+        raise
+
+    except Exception as e:
+        logger.exception("Fallo inesperado en descargar_imagenes_endpoint(): %s", e)
+        _cleanup(temp_root)
+        raise HTTPException(500, "Error interno al descargar imágenes")
 
 # ---------------------------------------------------------------------------
 # 13 · Identificar medicamento en Presentaciones.xls
@@ -1038,19 +1314,35 @@ async def identificar_medicamento(
         filt = _filter_bool(filt, "¿Comercializado?", comercializado)
 
     if nombre:
-        norm_query = _normalize(nombre)
-        series_norm = filt["Presentación"].fillna("").apply(_normalize)
+        # 1) normalizamos la consulta
+        norm_query   = _normalize(nombre)
+        # 2) calculamos la columna auxiliar
+        series_norm  = filt["Presentación"].fillna("").apply(_normalize)
         filt['_norm'] = series_norm
-        matches = filt[filt['_norm'].str.contains(norm_query)]
-        if matches.empty:
-            from difflib import get_close_matches
-            similares = get_close_matches(norm_query, series_norm.tolist(), n=10, cutoff=0.7)
-            matches = filt[filt['_norm'].isin(similares)]
-        filt = matches.drop(columns=['_norm'])
 
-    total = len(filt)
+        # 3) coincidencias por substring
+        substr = filt[filt['_norm'].str.contains(norm_query)]
+
+        # 4) coincidencias fuzzy
+        from difflib import get_close_matches
+        similares = get_close_matches(
+            norm_query,
+            series_norm.tolist(),
+            n=page_size,
+            cutoff=0.7
+        )
+        fuzzy = filt[filt['_norm'].isin(similares)]
+
+        # 5) unimos ambos sin duplicados y eliminamos la columna auxiliar
+        filt = (
+            pd.concat([substr, fuzzy])
+              .drop_duplicates()
+              .drop(columns=['_norm'])
+        )
+
+    total   = len(filt)
     page_df = _paginate(filt, pagina, page_size)
-    docs = page_df.to_dict(orient="records")
+    docs    = page_df.to_dict(orient="records")
 
     metadatos = _build_metadata({
         "nregistro":      nregistro,
@@ -1190,3 +1482,16 @@ async def buscar_nomenclator(
 )
 async def get_system_prompt() -> str:
     return constant.MCP_AEMPS_SYSTEM_PROMPT
+
+# ---------------------------------------------------------------------------
+#   Inicializar MCP
+# ---------------------------------------------------------------------------
+mcp = FastApiMCP(
+    app,
+    name="AEMPS CIMA MCP",
+    description="Acceso estructurado en tiempo real a datos regulatorios"
+)
+
+# Montamos las rutas MCP en /mcp (o el prefijo que configure FastApiMCP)
+mcp.mount()
+# mcp.setup_server()

@@ -153,7 +153,7 @@ def up(
         DEFAULT_PORT, help="Puerto TCP"
     ),
     workers: int = typer.Option(
-        2, help="Número de workers Uvicorn"
+        1, help="Número de workers Uvicorn"
     ),
     log_level: str = typer.Option(
         "info", help="Nivel de log Uvicorn"
