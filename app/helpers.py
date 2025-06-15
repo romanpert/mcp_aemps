@@ -102,38 +102,6 @@ def _normalize(s: str) -> str:
         if unicodedata.category(c) != "Mn"
     )
 
-async def _html_multiple_zip(
-    tipo: Literal["ft", "p"],
-    registros: List[str],
-    filename: str,
-    status_no_content: int
-) -> StreamingResponse:
-    html_bytes, errors = await cima._fetch_multiple_bytes(tipo, registros, filename)
-    if not html_bytes:
-        raise HTTPException(
-            status_code=status_no_content,
-            detail={"error": "No se pudo generar ningún HTML", "errors": errors}
-        )
-
-    # Crear ZIP en memoria
-    bio = BytesIO()
-    with zipfile.ZipFile(bio, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # Agregar cada HTML
-        for nr, data in html_bytes.items():
-            zf.writestr(f"{nr}_{filename}", data)
-        # Incluir metadata y errores si hay
-        metadata = _build_metadata({"nregistro": registros, "filename": filename})
-        zf.writestr("metadata.json", json.dumps(metadata))
-        if errors:
-            zf.writestr("errors.json", json.dumps(errors))
-    bio.seek(0)
-
-    return StreamingResponse(
-        bio,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=docs_{tipo}.zip"}
-    )
-
 # Helper para llamadas seguras a cima.*
 async def safe_cima_call(func, *args, **kwargs) -> Any:
     try:

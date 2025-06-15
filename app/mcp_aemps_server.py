@@ -71,8 +71,8 @@ logger = logging.getLogger("mcp_aemps_server")
 # ------------------------------------------------------------
 # Parámetros de Rate Limiting
 # ------------------------------------------------------------
-RATE_LIMIT = 100        # peticiones permitidas
-RATE_PERIOD = 60       # en segundos
+RATE_LIMIT = settings.rate_limit
+RATE_PERIOD = settings.rate_period
 
 # ---------------------------------------------------------------------------
 #   Crear la aplicación FastAPI + MCP
