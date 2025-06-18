@@ -7,23 +7,19 @@
 #     pip install fastapi fastapi-mcp httpx uvicorn fastapi-limiter fastapi-cache redis prometheus-fastapi-instrumentator opentelemetry-instrumentation-fastapi
 #     uvicorn mcp_aemps_server:app --reload  # http://localhost:<port>/mcp
 #
-# Ahora, toda la configuración sensible (hosts, puertos, Redis, CORS, rutas
+# Toda la configuración sensible (hosts, puertos, Redis, CORS, rutas
 # de datos, etc.) se lee desde `mcp_aemps.json` y/o variables de entorno.
 # ================================================================
 
 from __future__ import annotations
-import os
-import json
-import httpx
 import pandas as pd
 import asyncio
-from datetime import datetime, timezone
 from dateutil import parser as date_parser
 from pathlib import Path
 import tempfile
 import shutil
 import logging
-from typing import Any, List, Optional, AsyncIterator, Tuple, Dict
+from typing import Any, List, Optional, Dict
 from httpx import HTTPStatusError
 from enum import Enum
 from fastapi.responses import HTMLResponse, FileResponse
@@ -35,9 +31,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer
 from fastapi.responses import JSONResponse, StreamingResponse
-import zipfile
-import io
-from io import BytesIO
 from pydantic import BaseModel
 # Cache
 from fastapi_cache import FastAPICache
@@ -56,7 +49,7 @@ from app.config import settings
 from app.startup import lifespan
 from app.helpers import (_build_metadata, safe_cima_call, _filter_exact,
                          _paginate, _filter_bool, _filter_contains, _filter_date,
-                         _filter_numeric, format_response, _normalize, _html_multiple_zip,
+                         _filter_numeric, format_response, _normalize,
                          API_CIMA_AEMPS_VERSION, API_PSUM_VERSION)
 
 # ------------------------------------------------------------
@@ -135,7 +128,7 @@ FastAPIInstrumentor.instrument_app(app)
     "/medicamento",
     operation_id="obtener_medicamento",
     summary="Obtener ficha completa de un medicamento (por CN o nº de registro)",
-    description=constant.medicamento_description,
+    #description=constant.medicamento_description,
     response_model=Dict[str, Any],
 )
 @cache(expire=3600, key_builder=lambda func, *args, **kwargs: f"medicamento:{kwargs.get('cn','')}:{kwargs.get('nregistro','')}")
@@ -208,7 +201,7 @@ async def obtener_medicamento(
     "/medicamentos",
     operation_id="buscar_medicamentos",
     summary="Listado de medicamentos con filtros regulatorios avanzados",
-    description=constant.medicamentos_description,
+    #description=constant.medicamentos_description,
     response_model=Dict[str, Any],
 )
 async def buscar_medicamentos(
@@ -292,8 +285,9 @@ async def buscar_medicamentos(
 @app.post(
     "/ficha-tecnica/buscar",
     operation_id="buscar_en_ficha_tecnica",
-    summary="Busca texto en secciones específicas de la ficha técnica",
-    description=constant.buscar_ficha_tecnica_description,
+    summary="""Busca texto en secciones específicas de la ficha técnica. 
+            Búsqueda General, no válida para medicamentos específicos.""",
+    #description=constant.buscar_ficha_tecnica_description,
     response_model=Dict[str, Any],
 )
 async def buscar_en_ficha_tecnica(
@@ -302,7 +296,7 @@ async def buscar_en_ficha_tecnica(
         description=(
             "Lista de reglas con {seccion, texto, contiene}. "
             "Cada regla debe incluir: 'seccion' en formato 'N' o 'N.N', "
-            "'texto' (cadena) y 'contiene' (0 o 1)."
+            "'texto' (string) y 'contiene' (0 o 1)."
         )
     ),
 ) -> Dict[str, Any]:
@@ -343,7 +337,7 @@ async def buscar_en_ficha_tecnica(
     "/presentaciones",
     operation_id="listar_presentaciones",
     summary="Listar presentaciones de un medicamento con filtros (cn, nregistro, etc.)",
-    description=constant.presentaciones_description,
+    #description=constant.presentaciones_description,
     response_model=Dict[str, Any],
 )
 async def listar_presentaciones(
@@ -356,13 +350,15 @@ async def listar_presentaciones(
     estupefaciente: Optional[int] = Query(None, ge=0, le=1, description="1 = Incluye estupefacientes, 0 = Excluye."),
     psicotropo: Optional[int] = Query(None, ge=0, le=1, description="1 = Incluye psicótropos, 0 = Excluye."),
     estuopsico: Optional[int] = Query(None, ge=0, le=1, description="1 = Incluye estupefacientes o psicótropos, 0 = Excluye."),
-    pagina: Optional[int] = Query(1, ge=1, description="Número de página (mínimo 1)."),
 ) -> Dict[str, Any]:
     resultados = await safe_cima_call(cima.presentaciones, **locals())
     if resultados is None:
-        resultados = {"totalFilas": 0, "pagina": pagina, "tamanioPagina": 0, "resultados": []}
+        resultados = {
+            "totalFilas": 0,
+            "resultados": []
+        }
 
-    for item in resultados["resultados"]:
+    for item in resultados.get("resultados", []):
         # 1) estado.* (aut, susp, rev…)
         estado = item.get("estado")
         if isinstance(estado, dict):
@@ -387,11 +383,21 @@ async def listar_presentaciones(
             if "fini" in dps:
                 dps["fini"] = cima._parse_fecha(dps["fini"])
 
-    params = {k: v for k, v in {
-        "cn": cn, "nregistro": nregistro, "vmp": vmp, "vmpp": vmpp,
-        "idpractiv1": idpractiv1, "comerc": comerc, "estupefaciente": estupefaciente,
-        "psicotropo": psicotropo, "estuopsico": estuopsico, "pagina": pagina,
-    }.items() if v is not None}
+    # Solo incluyen filtros documentados
+    params = {
+        k: v for k, v in {
+            "cn": cn,
+            "nregistro": nregistro,
+            "vmp": vmp,
+            "vmpp": vmpp,
+            "idpractiv1": idpractiv1,
+            "comerc": comerc,
+            "estupefaciente": estupefaciente,
+            "psicotropo": psicotropo,
+            "estuopsico": estuopsico,
+        }.items() if v is not None
+    }
+
     metadatos = _build_metadata(params)
     return format_response(resultados, metadatos)
 
@@ -400,7 +406,7 @@ async def listar_presentaciones(
     "/presentacion",
     operation_id="obtener_presentacion",
     summary="Detalle de una o varias presentaciones (por uno o varios CN)",
-    description=constant.presentacion_description,
+    #description=constant.presentacion_description,
     response_model=Dict[str, Any],
 )
 async def obtener_presentacion(
@@ -482,7 +488,7 @@ async def obtener_presentacion(
     "/vmpp",
     operation_id="buscar_vmpp",
     summary="Equivalentes clínicos VMP/VMPP filtrables por principio activo, dosis, forma, etc.",
-    description=constant.vmpp_description,
+    #description=constant.vmpp_description,
     response_model=Dict[str, Any],
 )
 async def buscar_vmpp(
@@ -529,7 +535,7 @@ async def buscar_vmpp(
     "/maestras",
     operation_id="consultar_maestras",
     summary="Consultar catálogos maestros: ATC, Principios Activos, Formas, Laboratorios...",
-    description=constant.maestras_description,
+    #description=constant.maestras_description,
     response_model=Dict[str, Any],
 )
 async def consultar_maestras(
@@ -587,7 +593,7 @@ CAMBIOS_MAP = {
     "/registro-cambios",
     operation_id="registro_cambios",
     summary="Historial de altas, bajas y modificaciones de medicamentos",
-    description=constant.registro_cambios_description,
+    #description=constant.registro_cambios_description,
     response_model=Dict[str, Any],
 )
 async def registro_cambios(
@@ -657,23 +663,37 @@ async def registro_cambios(
     "/problemas-suministro",
     operation_id="problemas_suministro",
     summary="Consultar problemas de suministro por uno o varios CN",
-    description=constant.problemas_suministro_description,
+    #description=constant.problemas_suministro_description,
     response_model=Dict[str, Any],
 )
 async def problemas_suministro(
     cn: Optional[List[str]] = Query(
         None,
-        description="Uno o más Códigos Nacionales. Repetir parámetro: ?cn=123&cn=456"
-    )
+        description="Uno o más Códigos Nacionales. Repetir parámetro: ?cn=654321&cn=789456"
+    ),
+    pagina: int = Query(
+        1, ge=1,
+        description="Número de página (sólo si no hay filtro por CN)"
+    ),
+    tamanioPagina: int = Query(
+        10, ge=1, le=100,
+        description="Tamaño de página (sólo si no hay filtro por CN)"
+    ),
 ) -> Dict[str, Any]:
     # Metadatos
-    parametros = {"cn": cn}
+    parametros = {"cn": cn, "pagina": pagina, "tamanioPagina": tamanioPagina}
     metadatos = _build_metadata(parametros, API_PSUM_VERSION)
     metadatos["metadata"]["tipo_problema_suministros"] = cima.TIPOS_PROBLEMA
 
     # 1) Sin filtro: listado global
     if cn is None:
-        listado = await safe_cima_call(cima.psuministro, None)
+        # pasamos la paginación al cliente
+        listado = await safe_cima_call(
+            cima.psuministro,
+            None,
+            pagina=pagina,
+            tamanioPagina=tamanioPagina
+        )
         data = listado.get("resultados", [])
         return {"data": data, "metadata": metadatos["metadata"]}
 
@@ -716,7 +736,7 @@ class Seccion(BaseModel):
     "/doc-secciones/{tipo_doc}",
     operation_id="doc_secciones",
     summary="Metadatos de secciones de Ficha Técnica/prospecto",
-    description=constant.doc_secciones_description,
+    #description=constant.doc_secciones_description,
     response_model=List[Seccion],
 )
 async def doc_secciones(
@@ -765,7 +785,7 @@ class Format(str, Enum):
     "/doc-contenido/{tipo_doc}",
     operation_id="doc_contenido",
     summary="Contenido de secciones de Ficha Técnica/prospecto",
-    description=constant.doc_contenido_description,
+    #description=constant.doc_contenido_description,
     response_model=Dict[str, Any],
     responses={
         200: {
@@ -798,8 +818,7 @@ async def doc_contenido(
             format=format.value,
         )
     except Exception as e:
-        # ✅ AÑADIDO: Más información del error para debugging
-        print(f"Error detallado: {type(e).__name__}: {e}")
+        logger.debug(f"Error detallado: {type(e).__name__}: {e}")
         raise HTTPException(502, f"Error al obtener contenido: {e}")
 
     # Devolvemos tal cual: JSON validado, o HTML/txt crudo
@@ -826,7 +845,7 @@ async def doc_contenido(
     "/notas",
     operation_id="listar_notas",
     summary="Listado de notas de seguridad para uno o varios registros",
-    description=constant.listar_notas_description,
+    #description=constant.listar_notas_description,
     response_model=Dict[str, Any],
 )
 async def listar_notas(nregistro: List[str] = Query(...)) -> Dict[str, Any]:
@@ -852,7 +871,7 @@ async def listar_notas(nregistro: List[str] = Query(...)) -> Dict[str, Any]:
     "/notas/{nregistros}",
     operation_id="obtener_notas",
     summary="Detalle de notas de seguridad de uno o varios registros",
-    description=constant.obtener_notas_description,
+    # description=constant.obtener_notas_description,
     response_model=Dict[str, Any],
 )
 async def obtener_notas(
@@ -907,7 +926,7 @@ async def obtener_notas(
     "/materiales",
     operation_id="listar_materiales",
     summary="Listado de materiales informativos para uno o varios registros",
-    description=constant.listar_materiales_description,
+    # description=constant.listar_materiales_description,
     response_model=Dict[str, Any],
 )
 async def listar_materiales(
@@ -957,6 +976,7 @@ async def listar_materiales(
     "/materiales/{nregistro}",
     operation_id="obtener_materiales",
     summary="Detalle de materiales informativos de un registro",
+    # description=constant.obtener_materiales_description,
     response_model=Dict[str, Any],
 )
 async def obtener_materiales(
@@ -977,50 +997,59 @@ async def obtener_materiales(
             }
         )
 
-    # Aquí NO desempaquetamos resultado["materiales"], 
     # devolvemos el dict completo {nregistro, materiales}
     metadatos = _build_metadata({"nregistro": nregistro})
     return format_response(resultado, metadatos)
 
 # ---------------------------------------------------------------------------
-# 12a · HTML completo de ficha técnica (unificado)
+# 12a · HTML completo de ficha técnica (unificado en JSON usando get_html_bytes)
 # ---------------------------------------------------------------------------
 @app.get(
     "/doc-html/ft",
     operation_id="html_ficha_tecnica_multiple",
-    summary="Descarga ZIP de fichas técnicas para varios registros",
-    description=constant.html_ft_multiple_description,
+    summary="Obtiene las fichas técnicas HTML en JSON para varios registros",
+    # description=constant.html_ft_multiple_description,
     response_model=None,
 )
 async def html_ficha_tecnica_multiple(
     nregistro: List[str] = Query(..., description="Nº de registro (repetir)"),
-    filename: str = Query(..., description="Nombre de archivo HTML ('FichaTecnica.html')")
+    filename: str = Query(..., description="Nombre de archivo HTML ('FichaTecnica.html')"),
 ):
-    if len(nregistro) == 1:
+    if not nregistro or not filename:
+        raise HTTPException(400, "Se requiere al menos un 'nregistro' y un 'filename'.")
+
+    data_map: Dict[str, str] = {}
+    errors: Dict[str, str] = {}
+
+    for nr in nregistro:
         try:
-            data = await cima.get_html_bytes(
-                tipo="ft",
-                nregistro=nregistro[0],
-                filename=filename
-            )
+            raw = await cima.get_html_bytes(tipo="ft", nregistro=nr, filename=filename)
+            data_map[nr] = raw.decode("utf-8")
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise HTTPException(404, "Ficha técnica no encontrada")
-            raise HTTPException(502, str(e))
-        return HTMLResponse(content=data)
+                errors[nr] = "Ficha técnica no encontrada"
+            else:
+                errors[nr] = f"Error HTTP {e.response.status_code}: {e}"
+        except Exception as e:
+            errors[nr] = f"Error inesperado: {e}"
 
-    return await _html_multiple_zip(
-        tipo="ft",
-        registros=nregistro,
-        filename=filename,
-        status_no_content=404
-    )
+    if not data_map:
+        raise HTTPException(404, {"error": "No se pudo generar ningún HTML", "errors": errors})
+
+    payload: Dict[str, Any] = {
+        "data": data_map,
+        "metadata": _build_metadata({"nregistro": nregistro, "filename": filename}),
+    }
+    if errors:
+        payload["errors"] = errors
+
+    return JSONResponse(content=payload)
 
 @app.get(
     "/doc-html/ft/{nregistro}/{filename:path}",
     operation_id="html_ficha_tecnica",
     summary="HTML completo de ficha técnica (único registro)",
-    description=constant.html_ft_description,
+    # description=constant.html_ft_description,
     response_model=None,
 )
 async def html_ficha_tecnica(
@@ -1046,45 +1075,54 @@ async def html_ficha_tecnica(
     return HTMLResponse(content=data)
 
 # ---------------------------------------------------------------------------
-# 12b · HTML completo de prospecto (unificado)
+# 12b · HTML completo de prospecto (unificado en JSON usando get_html_bytes)
 # ---------------------------------------------------------------------------
 @app.get(
     "/doc-html/p",
     operation_id="html_prospecto_multiple",
-    summary="Descarga ZIP de prospectos para varios registros",
-    description=constant.html_p_multiple_description,
+    summary="Obtiene los prospectos HTML en JSON para varios registros",
+    # description=constant.html_p_multiple_description,
     response_model=None,
 )
 async def html_prospecto_multiple(
     nregistro: List[str] = Query(..., description="Nº de registro (repetir)"),
-    filename: str = Query(..., description="Nombre de archivo HTML ('Prospecto.html')")
+    filename: str = Query(..., description="Nombre de archivo HTML ('Prospecto.html')"),
 ):
     if not nregistro or not filename:
-        raise HTTPException(status_code=400, detail="Se requiere al menos un 'nregistro' y un 'filename'.")
+        raise HTTPException(400, "Se requiere al menos un 'nregistro' y un 'filename'.")
 
-    if len(nregistro) == 1:
+    data_map: Dict[str, str] = {}
+    errors: Dict[str, str] = {}
+
+    for nr in nregistro:
         try:
-            # usamos la versión que devuelve bytes completos
-            data = await cima.get_html_bytes(tipo="p", nregistro=nregistro[0], filename=filename)
+            raw = await cima.get_html_bytes(tipo="p", nregistro=nr, filename=filename)
+            data_map[nr] = raw.decode("utf-8")
         except HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise HTTPException(404, "Prospecto no encontrado")
-            raise HTTPException(status_code=502, detail=f"Error al obtener HTML de prospecto: {e}")
-        return HTMLResponse(content=data)
+                errors[nr] = "Prospecto no encontrado"
+            else:
+                errors[nr] = f"Error HTTP {e.response.status_code}: {e}"
+        except Exception as e:
+            errors[nr] = f"Error inesperado: {e}"
 
-    # varios registros → ZIP (igual que antes)
-    return await _html_multiple_zip(
-        tipo="p",
-        registros=nregistro,
-        filename=filename,
-        status_no_content=404
-    )
+    if not data_map:
+        raise HTTPException(404, {"error": "No se pudo generar ningún HTML", "errors": errors})
+
+    payload: Dict[str, Any] = {
+        "data": data_map,
+        "metadata": _build_metadata({"nregistro": nregistro, "filename": filename}),
+    }
+    if errors:
+        payload["errors"] = errors
+
+    return JSONResponse(content=payload)
 
 @app.get(
     "/doc-html/p/{nregistro}/{filename:path}",
     operation_id="html_prospecto",
     summary="HTML completo de prospecto (único registro)",
-    description=constant.html_p_description,
+    # description=constant.html_p_description,
     response_model=None,
 )
 async def html_prospecto(
@@ -1110,88 +1148,53 @@ async def html_prospecto(
     return HTMLResponse(content=data)
 
 # ---------------------------------------------------------------------------
-# 12c · Descargar IPT: PDF único o multipart/mixed con varios PDFs
+# 12c · Endpoint /descargar-ipt con extracción de texto y metadata
 # ---------------------------------------------------------------------------
-from secrets import token_hex
-from starlette.responses import StreamingResponse
-
 @app.get(
     "/descargar-ipt",
     operation_id="descargar_ipt",
-    summary="Descargar IPT para uno o varios CN (PDF suelto o multipart)",
-    description=constant.descargar_ipt_description,
+    summary="Obtener IPT: JSON con texto extraído y metadatos",
+    # description=constant.descargar_ipt_description,
+    response_model=Dict[str, Any],
 )
 async def descargar_ipt(
     background_tasks: BackgroundTasks,
-    cn: List[str] = Query(..., description="Uno o varios CN (repetible)"),
+    cn: List[str] | None = Query(None, description="Uno o varios CN"),
+    nregistro: List[str] | None = Query(None, description="Uno o varios NRegistro"),
     timeout: int = 15,
-):
-    if not cn:
-        raise HTTPException(400, "Debe proporcionar al menos un CN")
+    # only_url: bool = Query(False, description="Si True devuelve sólo URLs"),
+    # with_text: bool = Query(True, description="Si True extrae texto del PDF"),
+) -> Dict[str, Any]:
+    if not cn and not nregistro:
+        raise HTTPException(400, "Debe proporcionar al menos un CN o un NRegistro")
 
+    # Crear carpeta temporal y programar limpieza si descargamos
     temp_root = Path(tempfile.mkdtemp(prefix="ipts_"))
-    descargados: dict[str, Path] = {}
-    errores: list[str] = []
+    background_tasks.add_task(lambda p=temp_root: shutil.rmtree(p, ignore_errors=True))
 
-    def _cleanup(p: Path): shutil.rmtree(p, ignore_errors=True)
+    # Llamada interna para obtener URLs o texto
+    data = await cima.download_ipt(
+        cn=",".join(cn) if cn else None,
+        nregistro=",".join(nregistro) if nregistro else None,
+        timeout=timeout,
+        only_url=False,
+        with_text=True,
+    )
 
-    try:
-        # Descarga secuencial (evita 429)
-        for code in cn:
-            try:
-                rutas = await cima.download_ipt(
-                    cn=code,
-                    base_dir=str(temp_root / code),
-                    timeout=timeout,
-                )
-                if rutas:
-                    descargados[code] = Path(rutas[0])
-                    logger.debug("✅ %s → %s", code, rutas[0])
-                else:
-                    errores.append(f"{code}: sin IPT")
-            except Exception as e:
-                errores.append(f"{code}: {type(e).__name__}")
-                logger.exception("❌ %s", code)
+    # Construcción de metadata idéntica al resto de endpoints
+    params_used = {}
+    if cn:
+        params_used["cn"] = cn
+    if nregistro:
+        params_used["nregistro"] = nregistro
 
-        if not descargados:
-            raise HTTPException(404, "No se encontró ningún IPT")
+    metadatos = _build_metadata(params_used)
 
-        background_tasks.add_task(_cleanup, temp_root)
+    payload = {
+        "ipt": data
+    }
 
-        # --- un único PDF --------------------------------------------------
-        if len(descargados) == 1:
-            pdf = next(iter(descargados.values()))
-            return FileResponse(
-                pdf,
-                media_type="application/pdf",
-                filename=pdf.name,
-            )
-
-        # --- varios PDFs → multipart/mixed --------------------------------
-        boundary = f"ipts-{token_hex(8)}"
-
-        def _iter_parts():
-            for code, path in descargados.items():
-                yield f"--{boundary}\r\n".encode()
-                yield b"Content-Type: application/pdf\r\n"
-                yield f'Content-Disposition: attachment; filename="{code}_{path.name}"\r\n\r\n'.encode()
-                yield path.read_bytes()
-                yield b"\r\n"
-            yield f"--{boundary}--\r\n".encode()
-
-        return StreamingResponse(
-            _iter_parts(),
-            media_type=f"multipart/mixed; boundary={boundary}",
-            headers={"Content-Disposition": 'attachment; filename="ipts.multipart"'},
-        )
-
-    except HTTPException:
-        _cleanup(temp_root)
-        raise
-    except Exception as e:
-        logger.exception("Fallo inesperado descargar_ipt(): %s", e)
-        _cleanup(temp_root)
-        raise HTTPException(500, "Error interno en descargar_ipt")
+    return format_response(payload, metadatos)
 
 # ---------------------------------------------------------------------------
 # 12d · Descargar imágenes
@@ -1200,93 +1203,51 @@ async def descargar_ipt(
     "/descargar-imagenes",
     operation_id="descargar_imagenes",
     summary="Descargar imágenes para uno o varios CN (sola forma farmacéutica y/o caja)",
-    description=constant.descargar_imagenes_description
+    # description=constant.descargar_imagenes_description,
+    response_model=Dict[str, Any],
 )
 async def descargar_imagenes(
     background_tasks: BackgroundTasks,
-    cn: list[str] = Query(..., description="Uno o varios CN (repetible)"),
-    tipos: list[str] = Query(["formafarmac", "materialas"], description="Tipos a descargar: ‘formafarmac’, ‘materialas’"),
+    cn: List[str] = Query(None, description="Uno o varios CN"),
+    nregistro: List[str] = Query(None, description="Uno o varios NRegistro"),
+    tipos: List[str] = Query(["formafarmac", "materialas"], description="Tipos a descargar"),
     timeout: int = 15,
-):
-    if not cn:
-        raise HTTPException(400, "Debe proporcionar al menos un CN")
+    # only_url: bool = Query(True, description="Si True incluye URLs en la respuesta"),
+    # with_base64: bool = Query(False, description="Si True incluye contenido base64"),
+) -> Dict[str, Any]:
+    if not (cn or nregistro):
+        raise HTTPException(400, "Debe proporcionar al menos un CN o un NRegistro")
 
-    # Crear carpeta temporal para esta petición
     temp_root = Path(tempfile.mkdtemp(prefix="imgs_"))
-    descargados: dict[str, list[Path]] = {}
-    errores: list[str] = []
+    background_tasks.add_task(shutil.rmtree, temp_root, True)
 
-    def _cleanup(path: Path):
-        shutil.rmtree(path, ignore_errors=True)
+    only_url = True
+    with_base64 = False
 
-    try:
-        # Por cada CN, descargar las imágenes solicitadas
-        for code in cn:
-            try:
-                rutas = await cima.descargar_imagen(
-                    cn=code,
-                    tipos=tipos,
-                    base_dir=str(temp_root / code),
-                    timeout=timeout,
-                )
-                if rutas:
-                    # Convertir a Path y almacenar
-                    descargados[code] = [Path(r) for r in rutas]
-                    logger.debug("✅ %s → %s", code, rutas)
-                else:
-                    errores.append(f"{code}: sin imágenes")
-            except Exception as e:
-                errores.append(f"{code}: {type(e).__name__}")
-                logger.exception("❌ %s", code)
+    data_por_code = await cima.descargar_imagen(
+        cn=cn,
+        nregistro=nregistro,
+        tipos=tipos,
+        base_dir=str(temp_root),
+        timeout=timeout,
+        only_url=only_url,
+        with_base64=with_base64,
+    )
 
-        if not descargados:
-            # Ningún CN produjo imágenes
-            raise HTTPException(404, "No se encontró ninguna imagen para los CN proporcionados")
+    params_used: Dict[str, Any] = {}
+    if cn:
+        params_used["cn"] = cn
+    if nregistro:
+        params_used["nregistro"] = nregistro
+    if tipos:
+        params_used["tipos"] = tipos
+    params_used["only_url"] = only_url
+    params_used["with_base64"] = with_base64
 
-        # Programar limpieza al final de la petición
-        background_tasks.add_task(_cleanup, temp_root)
+    metadatos = _build_metadata(params_used)
+    payload = {"imagenes": data_por_code}
+    return format_response(payload, metadatos)
 
-        # Aplana todas las rutas en una sola lista
-        todas_rutas = [ruta for rutas in descargados.values() for ruta in rutas]
-
-        # Si solo hay una imagen, la devolvemos directamente
-        if len(todas_rutas) == 1:
-            solo = todas_rutas[0]
-            return FileResponse(
-                solo,
-                media_type="image/jpeg",
-                filename=solo.name,
-            )
-
-        # Varias imágenes → multipart/mixed
-        boundary = f"imgs-{token_hex(8)}"
-
-        def _iter_parts():
-            for code, rutas in descargados.items():
-                for ruta in rutas:
-                    yield f"--{boundary}\r\n".encode()
-                    yield b"Content-Type: image/jpeg\r\n"
-                    yield (
-                        f'Content-Disposition: attachment; filename="{code}_{ruta.name}"\r\n\r\n'
-                    ).encode()
-                    yield ruta.read_bytes()
-                    yield b"\r\n"
-            yield f"--{boundary}--\r\n".encode()
-
-        return StreamingResponse(
-            _iter_parts(),
-            media_type=f"multipart/mixed; boundary={boundary}",
-            headers={"Content-Disposition": 'attachment; filename="imagenes.multipart"'},
-        )
-
-    except HTTPException:
-        _cleanup(temp_root)
-        raise
-
-    except Exception as e:
-        logger.exception("Fallo inesperado en descargar_imagenes_endpoint(): %s", e)
-        _cleanup(temp_root)
-        raise HTTPException(500, "Error interno al descargar imágenes")
 
 # ---------------------------------------------------------------------------
 # 13 · Identificar medicamento en Presentaciones.xls
@@ -1295,7 +1256,7 @@ async def descargar_imagenes(
     "/identificar-medicamento",
     operation_id="identificar_medicamento",
     summary="Identifica hasta 10 presentaciones en base a CN, nregistro o nombre",
-    description=constant.identificar_medicamento_description,
+    # description=constant.identificar_medicamento_description,
     tags=["Presentaciones"],
     response_model=Dict[str, Any],
 )
@@ -1379,7 +1340,7 @@ async def identificar_medicamento(
     "/nomenclator",
     operation_id="buscar_nomenclator",
     summary="Busca productos farmacéuticos en el Nomenclátor de facturación",
-    description=constant.nomenclator_description,
+    # description=constant.nomenclator_description,
     tags=["Nomenclátor"],
     response_model=Dict[str, Any],
 )
@@ -1404,13 +1365,12 @@ async def buscar_nomenclator(
     larga_duracion:            Optional[bool]  = Query(None, description="Tratamiento de larga duración"),
     especial_control:          Optional[bool]  = Query(None, description="Especial control médico"),
     medicamento_huerfano:      Optional[bool]  = Query(None, description="Medicamento huérfano"),
-    pagina:                    int             = Query(1, ge=1, description="Página"),
-    page_size:                 int             = Query(10, ge=1, le=100, description="Resultados por página")
+    page_size:                 int             = Query(10, ge=1, le=100, description="Máximo de resultados a devolver"),
 ) -> Dict[str, Any]:
     df = app.state.df_nomenclator
     filt = df
 
-    # Exact & partial text filters
+    # Aplicar filtros
     if codigo_nacional:
         filt = _filter_exact(filt, "Código Nacional", codigo_nacional)
     if nombre_producto:
@@ -1431,11 +1391,7 @@ async def buscar_nomenclator(
         filt = _filter_exact(filt, "Código de la agrupación homogénea del producto sanitario", agrupacion_codigo)
     if agrupacion_nombre:
         filt = _filter_contains(filt, "Nombre de la agrupación homogénea del producto sanitario", agrupacion_nombre)
-
-    # Numeric filters
     filt = _filter_numeric(filt, "Precio venta al público con IVA", precio_min_iva, precio_max_iva)
-
-    # Boolean filters
     for flag, col in [
         (diagnostico_hospitalario, "Diagnóstico hospitalario"),
         (larga_duracion, "Tratamiento de larga duración"),
@@ -1444,8 +1400,6 @@ async def buscar_nomenclator(
     ]:
         if flag is not None:
             filt = _filter_bool(filt, col, flag)
-
-    # Date filters
     if fecha_alta_desde:
         filt = _filter_date(filt, "Fecha de alta en el nomenclátor", fecha_alta_desde, 'ge')
     if fecha_alta_hasta:
@@ -1455,11 +1409,12 @@ async def buscar_nomenclator(
     if fecha_baja_hasta:
         filt = _filter_date(filt, "Fecha de baja en el nomenclátor", fecha_baja_hasta, 'le')
 
-    total = len(filt)
-    page_df = _paginate(filt, pagina, page_size)
-    records = page_df.to_dict(orient="records")
+    # Resultados y metadatos
+    total_available = len(filt)
+    limit = min(page_size, total_available)
+    records = filt.head(limit).to_dict(orient="records")
 
-    metadatos = _build_metadata({
+    metadatos = {
         "codigo_nacional":         codigo_nacional,
         "nombre_producto":         nombre_producto,
         "tipo_farmaco":            tipo_farmaco,
@@ -1480,10 +1435,9 @@ async def buscar_nomenclator(
         "larga_duracion":          larga_duracion,
         "especial_control":        especial_control,
         "medicamento_huerfano":    medicamento_huerfano,
-        "pagina":                  pagina,
-        "page_size":               page_size,
-        "total":                   total,
-    })
+        "total":                   total_available,
+        "page_size":               limit,
+    }
 
     return {"data": records, **metadatos}
 
@@ -1491,7 +1445,7 @@ async def buscar_nomenclator(
     "/system-info-prompt",
     operation_id="get_system_info_prompt",
     summary="Obtener el Prompt del sistema para el agente MCP",
-    description=constant.system_info_prompt_description
+    # description=constant.system_info_prompt_description
 )
 async def get_system_prompt() -> str:
     return constant.MCP_AEMPS_SYSTEM_PROMPT

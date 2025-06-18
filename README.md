@@ -204,6 +204,8 @@ Esto permite configurar el servidor editando `app/mcp_aemps.json`:
   "data_dir": "data"
 }
 ```
+> Modifica estos campos para dar seguridad a tu sistema:
+uvicorn_host, access_host, port, redis_url, allowed_origins
 
 ### Docker Compose
 

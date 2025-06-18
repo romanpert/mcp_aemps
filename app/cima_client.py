@@ -13,7 +13,7 @@ Ejemplo rápido (CLI):
     python -m asyncio -c "import asyncio, cima_raw_client as c; print(asyncio.run(c.medicamento(cn='608679')))"
 """
 from __future__ import annotations
-
+import base64
 import asyncio
 import json
 from datetime import date
@@ -273,7 +273,11 @@ async def registro_cambios(
 # ---------------------------------------------------------------------------
 # 7 · Problemas de suministro (cliente)
 # ---------------------------------------------------------------------------
-async def psuministro(cn: str | None = None) -> dict | list:
+async def psuministro(
+    cn: str | None = None,
+    pagina: int = 1,
+    tamanioPagina: int = 10,
+) -> dict | list:
     """
     Cliente asíncrono para la API de Problemas de suministro:
       - GET  /psuministro                → listado global (v1)
@@ -283,7 +287,7 @@ async def psuministro(cn: str | None = None) -> dict | list:
     if cn:
         path, params = f"psuministro/v2/cn/{cn}", None
     else:
-        path, params = "psuministro", {"pagina": 1, "tamanioPagina": 20}
+        path, params = "psuministro", {"pagina": pagina, "tamanioPagina": tamanioPagina}
 
     url = f"{BASE_URL}/{path}"
     async with ClientSession() as session:
@@ -300,14 +304,24 @@ async def psuministro(cn: str | None = None) -> dict | list:
             raise HTTPException(status_code=e.status, detail=str(e))
 
     def _enrich(item: dict) -> None:
-        # Descripción del tipo de problema
-        code = item.get("tipoProblemaSuministro")
-        item["tipoProblemaSuministro_descripcion"] = TIPOS_PROBLEMA.get(code, "Desconocido")
-        # Conversión de fechas
-        if "fini" in item:
-            item["fecha_inicio"] = _parse_fecha(item.pop("fini"))
-        if "ffin" in item:
-            item["fecha_fin"]    = _parse_fecha(item.pop("ffin"))
+        # 1) Detectar “sin problemas” o ausencia de tipo
+        observ = item.get("observ", "").lower()
+        tipo_code = item.get("tipoProblemaSuministro")
+        if "sin problemas" in observ or tipo_code is None:
+            item["tipoProblemaSuministro_descripcion"] = "No existen problemas detectados"
+            item["fecha_inicio"] = None
+            item["fecha_fin"] = None
+        else:
+            # 2) Mapeo normal contra TIPOS_PROBLEMA
+            item["tipoProblemaSuministro_descripcion"] = TIPOS_PROBLEMA.get(
+                tipo_code,
+                "Desconocido"
+            )
+            # 3) Conversión de fechas (si vienen)
+            if "fini" in item:
+                item["fecha_inicio"] = _parse_fecha(item.pop("fini"))
+            if "ffin" in item:
+                item["fecha_fin"]    = _parse_fecha(item.pop("ffin"))
 
     # Si es detalle CN → dict único
     if cn:
@@ -541,39 +555,59 @@ async def get_html_bytes(
         return resp.content
 
 # ---------------------------------------------------------------------------
-# 13. Descargar documentos (con logging: sólo PDFs guardados)
+# 13. Descargar documentos (con opción only_url o texto + cleanup)
 # ---------------------------------------------------------------------------
+def extract_text_from_pdf(pdf_path: Path) -> str:
+    """Extrae todo el texto de un PDF usando PyMuPDF."""
+    import fitz  # PyMuPDF
+    doc = fitz.open(str(pdf_path))
+    text_blocks = []
+    for page in doc:
+        text_blocks.append(page.get_text())
+    doc.close()
+    return "\n".join(text_blocks)
+
+
 async def download_docs(
     cn: str | None = None,
     nregistro: str | None = None,
     tipos: list[str] = ("ft", "p", "ipt"),
     base_dir: str = "data/pdf",
     timeout: int = 15,
-) -> list[str]:
-    logger.debug("download_docs cn=%s nreg=%s tipos=%s", cn, nregistro, tipos)
-
+    only_url: bool = False,          # si True devuelve solo URLs
+    with_text: bool = False,         # si True descarga, extrae texto y borra PDF
+) -> List[dict] | List[str]:
+    """
+    - only_url=True: devuelve List[str] de URLs oficiales.
+    - with_text=True: descarga, extrae texto, borra el PDF y devuelve List[dict] con keys: url, text.
+    - ambos flags False: descarga y devuelve List[str] de rutas locales.
+    """
     med = await medicamento(cn=cn, nregistro=nregistro)
     if not isinstance(med, dict):
-        logger.info("med no es dict → []")
         return []
 
-    docs = (
-        med.get("data", {}).get("docs")
-        or med.get("docs")
-        or []
-    )
+    docs = med.get("data", {}).get("docs") or med.get("docs") or []
     if not docs:
-        logger.info("Sin docs en ficha → []")
         return []
 
-    downloaded: list[str] = []
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout), headers=_DEFAULT_HEADERS
-    ) as client:
+    # Sólo URLs
+    if only_url:
+        urls: List[str] = []
         for tipo in tipos:
             code = _DOC_TYPE_MAP.get(tipo.lower())
             if not code:
-                logger.warning("Tipo %s no mapeado", tipo)
+                continue
+            for doc in docs:
+                if doc.get("tipo") == code and doc.get("url"):
+                    urls.append(doc["url"])
+        return urls
+
+    # Descarga y/o extracción de texto
+    results = []
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for tipo in tipos:
+            code = _DOC_TYPE_MAP.get(tipo.lower())
+            if not code:
                 continue
 
             dest_dir = Path(base_dir) / tipo.lower()
@@ -582,18 +616,25 @@ async def download_docs(
             for doc in docs:
                 if doc.get("tipo") == code and doc.get("url"):
                     url = doc["url"]
-                    try:
-                        resp = await client.get(url, follow_redirects=True)
-                        resp.raise_for_status()
-                        fp = dest_dir / Path(url).name
-                        fp.write_bytes(resp.content)
-                        downloaded.append(str(fp))
-                        logger.debug("Descargado %s → %s", url, fp)
-                    except Exception as e:
-                        logger.exception("Error %s %s", url, e)
-                        raise   # propagamos
+                    resp = await client.get(url, follow_redirects=True)
+                    resp.raise_for_status()
 
-    return downloaded
+                    filename = Path(url).name
+                    local_path = dest_dir / filename
+                    local_path.write_bytes(resp.content)
+
+                    if with_text:
+                        # Extrae texto y borra el PDF local
+                        text = extract_text_from_pdf(local_path)
+                        results.append({"url": url, "text": text})
+                        try:
+                            local_path.unlink()
+                        except Exception:
+                            pass
+                    else:
+                        results.append(str(local_path))
+
+    return results
 
 # ---------------------------------------------------------------------------
 # 13b. Descargar sólo IPT (envoltorio)
@@ -601,89 +642,106 @@ async def download_docs(
 async def download_ipt(
     cn: str | None = None,
     nregistro: str | None = None,
-    base_dir: str = "data/pdf/ipt",
     timeout: int = 15,
-) -> list[str]:
+    only_url: bool = False,
+    with_text: bool = False,
+) -> List[dict] | List[str]:
     return await download_docs(
         cn=cn,
         nregistro=nregistro,
         tipos=["ipt"],
-        base_dir=base_dir,
+        base_dir="data/pdf/ipt",
         timeout=timeout,
+        only_url=only_url,
+        with_text=with_text,
     )
 
 # ---------------------------------------------------------------------------
-# 14. Descargar imágenes
+# 14. Función interna descargar_imagen con only_url y with_base64
 # ---------------------------------------------------------------------------
-# Mapa de nombres de tipos (puedes ajustarlo si cambian)
+# Tipos de imagen válidos
 _VALID_IMAGE_TYPES = {"formafarmac", "materialas"}
 
 async def descargar_imagen(
-    cn: str | None = None,
-    nregistro: str | None = None,
-    tipos: list[str] = ("formafarmac", "materialas"),
+    cn: List[str] | None = None,
+    nregistro: List[str] | None = None,
+    tipos: List[str] = ("formafarmac", "materialas"),
     base_dir: str = "data/img",
     timeout: int = 15,
-) -> list[str]:
+    only_url: bool = False,
+    with_base64: bool = False,
+) -> Dict[str, List[Union[str, Dict[str, Any]]]]:
     """
-    Descarga las imágenes (forma farmacéutica y/o material de la caja) de un medicamento.
-    
-    Parámetros:
-    - cn, nregistro: identificadores que acepta la función `medicamento`.
-    - tipos: lista de tipos a descargar; valores válidos: "formafarmac", "materialas".
-    - base_dir: directorio base donde se guardarán las imágenes.
-    - timeout: segundos antes de timeout en la petición HTTP.
-    
-    Devuelve:
-    - lista de rutas de los archivos descargados (como strings).
+    Descarga imágenes y las agrupa por CN o NRegistro.
+
+    - only_url=True,  with_base64=False: devuelve solo URLs (List[str] si solo url o List[dict]{'url'}).
+    - only_url=False, with_base64=False: descarga localmente y devuelve rutas (List[str]).
+    - only_url=False, with_base64=True: devuelve solo base64 (List[dict]{'base64'}).
+    - only_url=True,  with_base64=True: devuelve url y base64 (List[dict]{'url','base64'}).
     """
-    logger.debug("descargar_imagenes cn=%s nreg=%s tipos=%s", cn, nregistro, tipos)
+    if not (cn or nregistro):
+        return {}
 
-    # 1) Obtener ficha del medicamento
-    med = await medicamento(cn=cn, nregistro=nregistro)
-    if not isinstance(med, dict):
-        logger.info("med no es dict → []")
-        return []
-
-    # 2) Extraer lista de fotos
-    fotos = (
-        med.get("data", {}).get("fotos")
-        or med.get("fotos")
-        or []
-    )
-    if not fotos:
-        logger.info("Sin fotos en ficha → []")
-        return []
-
-    # 3) Filtrar tipos inválidos y preparar descarga
     tipos_validos = [t.lower() for t in tipos if t.lower() in _VALID_IMAGE_TYPES]
     if not tipos_validos:
-        logger.warning("Ningún tipo válido en %s → []", tipos)
-        return []
+        return {}
 
-    descargados: list[str] = []
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout), headers=_DEFAULT_HEADERS) as client:
-        for tipo in tipos_validos:
-            dest_dir = Path(base_dir) / tipo
-            dest_dir.mkdir(parents=True, exist_ok=True)
+    client = httpx.AsyncClient(timeout=timeout)
+    resultados_por_code: Dict[str, List[Union[str, Dict[str, Any]]]] = {}
 
-            for foto in fotos:
-                if foto.get("tipo") == tipo and foto.get("url"):
-                    thumb_url = foto["url"]
-                    # Reemplazar 'thumbnails' por 'full' en la URL
-                    full_url = thumb_url.replace("/thumbnails/", "/full/")
-                    try:
-                        resp = await client.get(full_url, follow_redirects=True)
-                        resp.raise_for_status()
-                        archivo = dest_dir / Path(full_url).name
-                        archivo.write_bytes(resp.content)
-                        descargados.append(str(archivo))
-                        logger.debug("Descargado %s → %s", full_url, archivo)
-                    except Exception as e:
-                        logger.exception("Error al descargar %s: %s", full_url, e)
-                        raise  # Propaga el error para gestión externa
+    async def _procesar_med(code: str, med: dict):
+        fotos = med.get("data", {}).get("fotos", []) or med.get("fotos", [])
+        lista_imagenes: List[Union[str, Dict[str, Any]]] = []
+        for foto in fotos:
+            tipo = foto.get("tipo")
+            url_thumb = foto.get("url")
+            if tipo in tipos_validos and url_thumb:
+                url_full = url_thumb.replace("/thumbnails/", "/full/")
 
-    return descargados
+                # only_url sin base64: devolvemos solo URL
+                if only_url and not with_base64:
+                    lista_imagenes.append(url_full)
+                    continue
+
+                # descargamos el contenido
+                resp = await client.get(url_full, follow_redirects=True)
+                resp.raise_for_status()
+                content = resp.content
+
+                # solo local sin base64
+                if not only_url and not with_base64:
+                    dest_dir = Path(base_dir) / tipo
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    local_path = dest_dir / Path(url_full).name
+                    local_path.write_bytes(content)
+                    lista_imagenes.append(str(local_path))
+                    continue
+
+                # codificar en base64 para los casos restantes
+                b64 = base64.b64encode(content).decode("ascii")
+
+                # only base64
+                if not only_url and with_base64:
+                    lista_imagenes.append({"base64": b64})
+                # both url + base64
+                elif only_url and with_base64:
+                    lista_imagenes.append({"url": url_full, "base64": b64})
+
+        resultados_por_code[code] = lista_imagenes
+
+    for code in cn or []:
+        med = await medicamento(cn=code)
+        if isinstance(med, dict):
+            await _procesar_med(code, med)
+
+    for code in nregistro or []:
+        med = await medicamento(nregistro=code)
+        if isinstance(med, dict):
+            await _procesar_med(code, med)
+
+    await client.aclose()
+    return resultados_por_code
+
 
 # ---------------------------------------------------------------------------
 # __main__ – demostración rápida (CLI)

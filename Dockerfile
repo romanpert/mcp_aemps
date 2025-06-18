@@ -19,11 +19,11 @@ COPY pyproject.toml ./
 
 # ----- 3 · Instalar dependencias -----
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt
 
 # ----- 3 · Copiamos código y spec -----
 COPY app ./app
-COPY data ./data
+# COPY data ./data
 
 # ----- 5 · Instalar la aplicación en modo editable -----
 RUN pip install --no-cache-dir -e .
@@ -36,8 +36,11 @@ EXPOSE 8000
 # CMD ["uvicorn", "app/mcp_aemps_server:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "/app"]
 
 # 3B) Arranque con CLI
-# CMD en exec-form: una sola línea, comillas dobles externas y escapadas internas
-CMD ["sh", "-c", "HOST=$(jq -r .uvicorn_host /app/mcp_aemps.json) && \
-PORT=$(jq -r .port /app/mcp_aemps.json) && \
-echo \"Arrancando en $HOST:$PORT…\" && \
-exec mcp_aemps up --host \"$HOST\" --port \"$PORT\""]
+# Arranque con CLI leyendo UVICORN_HOST y PORT del entorno
+CMD ["sh", "-c", "\
+  echo \"Arrancando en ${UVICORN_HOST}:${PORT}…\" && \
+  exec mcp_aemps up \
+    --uvicorn-host \"${UVICORN_HOST}\" \
+    --port         \"${PORT}\" \
+    --access-host  \"${ACCESS_HOST:-localhost}\"\
+"]

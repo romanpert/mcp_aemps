@@ -1,69 +1,89 @@
-# config.py
+# app/config.py
 from pathlib import Path
+from typing import List, Annotated
 import os
-import json
-from typing import List
-from pydantic import BaseModel, AnyUrl, Field, field_validator, ValidationInfo
 
-BASE_DIR = Path(__file__).parent
-CONFIG_FILE = BASE_DIR / "mcp_aemps.json"
+from dotenv import load_dotenv
+from pydantic import AnyUrl, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
 
-if not CONFIG_FILE.exists():
-    raise RuntimeError(f"No se encontró el fichero de configuración: {CONFIG_FILE}")
+# 1) Carga el .env en memoria
+ROOT_DIR = Path(__file__).parent.parent
+load_dotenv(ROOT_DIR / ".env")
 
-with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-    _cfg_data = json.load(f)
+class Settings(BaseSettings):
+    # Configuración de Pydantic v2
+    model_config = SettingsConfigDict(
+        case_sensitive=False,
+    )
 
+    # Versión de la aplicación
+    mcp_version: str = Field("0.1.0", description="Versión del servidor")
 
-class Settings(BaseModel):
-    mcp_version: str = Field(default=_cfg_data.get("mcp_version", "0.1.0"))
-    uvicorn_host: str = Field(default=_cfg_data.get("uvicorn_host", "0.0.0.0"))
-    access_host: str = Field(default=_cfg_data.get("access_host", "localhost"))
-    port: int = Field(default=_cfg_data.get("port", 8000))
-    redis_url: AnyUrl = Field(default=_cfg_data.get("redis_url", "redis://localhost:6379/0"))
-    allowed_origins: List[str] = Field(default=_cfg_data.get("allowed_origins", ["http://localhost:3000"]))
-    cache_prefix: str = Field(default=_cfg_data.get("cache_prefix", "fastapi-cache"))
-    data_dir: str = Field(default=_cfg_data.get("data_dir", str(BASE_DIR / "data")))
-    rate_limit: str = Field(default=_cfg_data.get("rate_limit", 100))
-    rate_period: str = Field(default=_cfg_data.get("rate_period", 60))
+    # Servidor
+    uvicorn_host: str = Field("0.0.0.0", description="Host donde bindeará Uvicorn")
+    access_host: str = Field("localhost", description="Host público para la API")
+    port: int = Field(8000, description="Puerto TCP")
+
+    # Redis (host, puerto, usuario y contraseña);
+    # luego montamos redis_url automáticamente
+    redis_host: str = Field("localhost", description="Host de Redis")
+    redis_port: int = Field(6379, description="Puerto de Redis")
+    redis_user: str = Field("default", description="Usuario Redis")
+    redis_password: str = Field(..., description="Password Redis")
+    redis_url: AnyUrl | None = Field(
+        None,
+        description="Cadena completa de conexión a Redis (se autogenera si no se provee)"
+    )
+    cache_prefix: str = Field("fastapi-cache", description="Prefijo de cache")
+
+    # CORS
+    allowed_origins: Annotated[List[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:3000"],
+        description="Orígenes permitidos para CORS"
+    )
+
+    # Datos
+    data_dir: str = Field("/data", description="Ruta montada con los datos")
+
+    # Rate limiting
+    rate_limit: int = Field(100, description="Peticiones por periodo")
+    rate_period: int = Field(60, description="Periodo en segundos")
 
     @field_validator("allowed_origins", mode="before")
-    @classmethod
-    def split_allowed_origins(cls, v: str | List[str], info: ValidationInfo) -> List[str]:
-        """
-        Si ALLOWED_ORIGINS se pasa como cadena separada por comas,
-        la convertimos a lista.
-        """
+    def split_allowed_origins(cls, v):
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
+            return [u.strip() for u in v.split(",") if u.strip()]
         return v
+    
+    @field_validator("redis_url", mode="before")
+    def assemble_redis_url(cls, v, info):
+        # si el usuario pasa REDIS_URL en .env, úsalo;
+        # si no, métele host, port, user, password
+        if v is not None:
+            return v
+        data = info.data
+        user = data.get("redis_user")
+        pwd  = data.get("redis_password")
+        host = data.get("redis_host")
+        port = data.get("redis_port")
+        return f"redis://{user}:{pwd}@{host}:{port}/0"
 
     @field_validator("port")
-    @classmethod
-    def port_must_be_positive(cls, v: int) -> int:
-        """
-        El puerto debe estar entre 1 y 65535.
-        """
-        if v <= 0 or v > 65535:
+    def port_must_be_valid(cls, v):
+        if not (1 <= v <= 65535):
             raise ValueError("El puerto debe estar entre 1 y 65535")
         return v
 
     @field_validator("data_dir")
-    @classmethod
-    def data_dir_must_exist(cls, v: str) -> str:
-        """
-        El directorio de datos debe existir y ser una carpeta.
-        """
+    def ensure_data_dir_exists(cls, v):
         p = Path(v)
-        if not p.exists() or not p.is_dir():
-            raise ValueError(f"El directorio de datos no existe o no es carpeta: {v}")
-        return v
+        # Si no existe, lo creamos
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise ValueError(f"No se pudo crear el directorio de datos '{v}': {e}")
+        return str(p.resolve())
 
-
-# Instanciamos y validamos
+# Instanciamos
 settings = Settings()
-
-# Tras la validación, revisamos que DATA_DIR realmente exista
-data_path = Path(settings.data_dir)
-if not data_path.exists():
-    raise RuntimeError(f"El directorio de datos no existe: {data_path}")

@@ -59,7 +59,11 @@ async def lifespan(app: FastAPI):
     # Inicialización de Redis o caché en memoria
     if settings.redis_url:
         try:
-            redis = Redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+            redis = Redis.from_url(
+                str(settings.redis_url),
+                encoding="utf-8",
+                decode_responses=True
+            )
             FastAPICache.init(RedisBackend(redis), prefix=settings.cache_prefix)
             await FastAPILimiter.init(
                 redis,

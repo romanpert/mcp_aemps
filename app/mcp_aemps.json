@@ -1,12 +1,5 @@
 {
-  "mcp_version": "0.1.0",
   "uvicorn_host": "0.0.0.0",
   "access_host": "localhost",
-  "port": 8000,
-  "redis_url": "redis://localhost:6379/0",
-  "allowed_origins": ["https://mi-aplicacion-oficial.es", "http://localhost:3000", "*"],
-  "cache_prefix": "fastapi-cache",
-  "data_dir": "data",
-  "rate_limit": 100,
-  "rate_period": 60
+  "port": 8000
 }

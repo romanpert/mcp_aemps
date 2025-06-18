@@ -101,7 +101,6 @@ def _normalize(s: str) -> str:
         c for c in unicodedata.normalize("NFD", s.lower())
         if unicodedata.category(c) != "Mn"
     )
-
 # Helper para llamadas seguras a cima.*
 async def safe_cima_call(func, *args, **kwargs) -> Any:
     try:

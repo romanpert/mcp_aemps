@@ -8,9 +8,14 @@ fastapi-mcp
 pillow
 openpyxl
 authlib
-fastapi-cache2
 aioredis
+prometheus-fastapi-instrumentator
+fastapi-cache2
 fastapi-limiter
 redis
 python-jose[cryptography]
 passlib[bcrypt]
+PyMuPDF
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
